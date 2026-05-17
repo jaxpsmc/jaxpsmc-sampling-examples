@@ -1,9 +1,9 @@
 from jaxpsmc import *
-jax.config.update("jax_enable_x64", True)
 import jimgw
 import time
 import jax
 import jax.numpy as jnp
+jax.config.update("jax_enable_x64", True)
 from jimgw.core.jim import Jim
 from jimgw.core.prior import (
     CombinePrior,
@@ -57,6 +57,7 @@ parser.add_argument("--n-total", type=int, default=4096)
 parser.add_argument("--pc-n-steps", type=int, default=8)
 parser.add_argument("--pc-n-max-steps", type=int, default=80)
 parser.add_argument("--keep-max", type=int, default=4096)
+parser.add_argument("--sampling-mode", type=str, default="truncated_persistent",  choices=["persistent", "truncated_persistent"],)
 parser.add_argument("--random-state", type=int, default=0)
 parser.add_argument("--precondition", action="store_true", default=True)  # True by default
 parser.add_argument("--no-precondition", action="store_false", dest="precondition")
@@ -73,7 +74,10 @@ parser.add_argument("--proposal-scale", type=float, default=0.0)
 parser.add_argument("--trim-ess", type=float, default=0.99)
 parser.add_argument("--bins", type=int, default=1000)
 parser.add_argument("--bisect-steps", type=int, default=1000)
-
+# delayed acceptance
+parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
+parser.add_argument("--da-c-const", type=float, default=0.01,)
+parser.add_argument("--da-d-const", type=float, default=2.0, help="Conservative delayed-acceptance d constant.",)
 
 
 
@@ -515,14 +519,15 @@ def plot_diagnostics(out, n_active, n_dims, outdir,
 
 ##############################################################################################
 # 4. EXPERIMENT RUNNER
-##############################################################################################
+############################################################################################## 
 def run_event_and_save_posteriors(
     *,
     event_name: str,
-    prior_u,                     
-    loglike_x,                   
+    prior_u,
+    loglike_x,
+    loglike_approx_x=None,
     D: int,
-    names: list[str],            
+    names: list[str],
     ranges,
     periodic_idx=None,
     args,
@@ -539,6 +544,7 @@ def run_event_and_save_posteriors(
     n_steps     = int(args.pc_n_steps)
     n_max_steps = int(args.pc_n_max_steps)
     keep_max    = int(args.keep_max)
+    sampling_mode = str(args.sampling_mode)    
 
     precond   = bool(args.precondition)
     dynamic   = bool(args.dynamic)
@@ -551,24 +557,57 @@ def run_event_and_save_posteriors(
     bins           = int(args.bins)
     bisect_steps   = int(args.bisect_steps)
 
+    delayed_acceptance = bool(args.delayed_acceptance)
+    da_c_const = float(args.da_c_const)
+    da_d_const = float(args.da_d_const)
+    if loglike_approx_x is None:
+        loglike_approx_x = loglike_x
+
     seed     = int(args.random_state)
     n_keep   = int(args.nr_of_samples)   
     out_root = str(args.outdir)          
 
     # define sampler
-    cfg = SamplerConfigJAX(n_dim=D, n_active=n_active, n_effective=n_effective,
-                           n_prior=n_prior, n_total=n_total, n_steps=n_steps,
-                           n_max_steps=n_max_steps, proposal_scale=proposal_scale,
-                           keep_max=keep_max, trim_ess=trim_ess, bins=bins,
-                           bisect_steps=bisect_steps, preconditioned=precond,
-                           dynamic=dynamic, metric=metric, resample=resample,
-                           transform=transform, periodic=periodic_idx,
-                           reflective=None, blob_dim=0,)
+   
+    cfg = SamplerConfigJAX(
+        n_dim=D,
+        n_active=n_active,
+        n_effective=n_effective,
+        n_prior=n_prior,
+        n_total=n_total,
+        n_steps=n_steps,
+        n_max_steps=n_max_steps,
+        proposal_scale=proposal_scale,
+        sampling_mode=sampling_mode,
+        keep_max=keep_max,
+        trim_ess=trim_ess,
+        bins=bins,
+        bisect_steps=bisect_steps,
+        preconditioned=precond,
+        dynamic=dynamic,
+        metric=metric,
+        resample=resample,
+        transform=transform,
+        periodic=periodic_idx,
+        reflective=None,
+        blob_dim=0,
+
+        # delayed acceptance
+        delayed_acceptance=delayed_acceptance,
+        da_c_const=da_c_const,
+        da_d_const=da_d_const,
+        )
 
     t0 = time.time()
 
     # run sampler
-    sampler = SamplerJAX(prior_u, loglike_x, cfg, flow=IdentityFlowJAX(D),)   
+    sampler = SamplerJAX(
+        prior_u,
+        loglike_x,
+        cfg,
+        flow=IdentityFlowJAX(D),
+        loglike_approx_single_fn=loglike_approx_x,
+    )
       
     out = sampler.run(jax.random.PRNGKey(seed))
     out = _block_tree(out)
@@ -598,6 +637,7 @@ def run_event_and_save_posteriors(
     logZerr = float(np.asarray(out.logz_err))
 
     print("Sampling complete!")
+    print("sampling_mode =", sampling_mode)
     print("n_prior (adjusted) =", n_prior, "(input was", n_prior_in, ")")
     print("samples.shape =", theta_physical.shape)
     print("logZ =", logZ, "logZerr =", logZerr)
@@ -618,6 +658,7 @@ def run_event_and_save_posteriors(
         "logz": float(logZ),
         "logz_err": float(logZerr),
         "seed": int(seed),
+        "sampling_mode": str(sampling_mode),
         "note": "Posterior draws from sampler (physical space)",
     }
 
@@ -633,7 +674,7 @@ def run_event_and_save_posteriors(
     print(f"[{event_name}] wrote posterior HDF5: {h5_path}")
 
     #1. download jims posterior HDF5 path for comparison
-    TRUE_FILE = "/home/obevza/jaxpsmc/GW_examples/GW150914_095045_data0_1126259462-391_analysis_H1L1_result.hdf5"
+    TRUE_FILE = "/home/obevza/jaxpsmc/examples/validation_GW_inference/GW150914_095045_data0_1126259462-391_analysis_H1L1_result.hdf5"
     # match my parameters with true posteriors
     name_map = {
         "M_c":      "chirp_mass",
@@ -749,6 +790,7 @@ def main(argv=None):
         event_name="GW150914",
         prior_u=prior_smc,
         loglike_x=gw_loglike_unconstrained,
+        loglike_approx_x=gw_loglike_unconstrained,  # first correctness test
         D=D_transformed,
         names=final_names,
         ranges=None,
@@ -758,46 +800,52 @@ def main(argv=None):
     return outdir, theta
 
 
-if __name__ == "__main__":
-    main()
+#if __name__ == "__main__":
+#    main()
 
 
 
-#sys.argv = [
-#    "notebook",
-#    "--outdir", "/home/obevza/jaxpsmc/GW_examples",       
-#    "--nr-of-samples", "10000",        
+sys.argv = [
+    "notebook",
+    "--outdir", "/home/obevza/jaxpsmc/GW_examples",       
+    "--nr-of-samples", "10000",        
 
-#    "--n-effective", "7000",
-#    "--n-active", "7000",
-#    "--n-prior", "175000",
+    "--n-effective", "7000",
+    "--n-active", "3500",
+    "--n-prior", "175000",
 
-#    "--n-total", "10000",
-#    "--pc-n-steps", "450",
-#    "--pc-n-max-steps", "850",
-#    "--keep-max", "30000",
-#    "--random-state", "0",
+    "--n-total", "10000",
+    "--pc-n-steps", "450",
+    "--pc-n-max-steps", "1000",
+    "--keep-max", "30000",
+    "--sampling-mode", "persistent",   # "persistent", "truncated_persistent",
+    "--random-state", "0",
 
-#    "--metric", "ess",
-#    "--resample", "mult",
-#    "--transform", "probit",
+    "--metric", "ess",
+    "--resample", "mult",
+    "--transform", "probit",
 
-#    "--proposal-scale", "0.0",
-#    "--trim-ess", "0.99",
-#    "--bins", "1000",
-#    "--bisect-steps", "1000",
-#]
+    "--proposal-scale", "0.0",
+    "--trim-ess", "0.99",
+    "--bins", "1000",
+    "--bisect-steps", "1000",
 
-#args = parser.parse_args()
+    # delayed acceptance
+    #"--delayed-acceptance",
+    #"--da-c-const", "0.01",
+    #"--da-d-const", "2.0",
+]
+
+args = parser.parse_args()
 
 
-#outdir, theta = run_event_and_save_posteriors(
-#    event_name="GW150914",
-#    prior_u=prior_smc,                     # use transformed prior
-#    loglike_x=gw_loglike_unconstrained,    # use likelihood
-#    D=D_transformed,                       # dimension in transformed space
-#    names=final_names,                     # transformed parameter names
-#    ranges=None,                           # will be computed inside or set to None
-#    periodic_idx=None,
-#    args=args,
-#)
+outdir, theta = run_event_and_save_posteriors(
+    event_name="GW150914",
+    prior_u=prior_smc,                     # use transformed prior
+    loglike_x=gw_loglike_unconstrained,    # use likelihood
+    D=D_transformed,                       # dimension in transformed space
+    names=final_names,                     # transformed parameter names
+    ranges=None,                           # will be computed inside or set to None
+    periodic_idx=None,
+    args=args,
+)
