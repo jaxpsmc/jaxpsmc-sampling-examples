@@ -53,6 +53,7 @@ parser.add_argument("--n-total", type=int, default=4096)
 parser.add_argument("--pc-n-steps", type=int, default=8)
 parser.add_argument("--pc-n-max-steps", type=int, default=80)
 parser.add_argument("--keep-max", type=int, default=4096)
+parser.add_argument("--sampling-mode", type=str, default="truncated_persistent", choices=["persistent", "truncated_persistent"],)
 parser.add_argument("--random-state", type=int, default=0)
 parser.add_argument("--precondition", action="store_true", default=True)  # keep True by default
 parser.add_argument("--no-precondition", action="store_false", dest="precondition")
@@ -62,6 +63,10 @@ parser.add_argument("--metric", type=str, default="ess", choices=["ess", "uss"])
 parser.add_argument("--resample", type=str, default="mult", choices=["mult", "syst"])
 parser.add_argument("--transform", type=str, default="probit", choices=["probit", "logit"])
 parser.add_argument("--use-identity-flow", action="store_true", default=True)
+# delayed acceptance arguments
+parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
+parser.add_argument("--da-c-const", type=float, default=0.01,)
+parser.add_argument("--da-d-const", type=float, default=2.0,)
 
 
 
@@ -99,7 +104,7 @@ class SequentialMCExperimentRunner:
             print("Setting the target function to a standard Gaussian distribution.")
 
             # defining parameters for smc sampler 
-            np.random.seed(505)
+            np.random.seed(2)
             D = self.params["n_dims"]
             
             true_samples, means, covariances, weights = GaussianMixtureGenerator.generate_gaussian_mixture(
@@ -202,6 +207,9 @@ class SequentialMCExperimentRunner:
         if hasattr(self, "likelihood") and self.likelihood is not None:
             loglike_single = self.likelihood.loglike_single  # use likelihood
 
+            # first DA correctness test: surrogate = full likelihood
+            loglike_approx_single = self.likelihood.loglike_single
+
         # Read sampler params
         n_effective  = int(self.params.get("n_effective", 512))
         n_active     = int(self.params.get("n_active", 256))
@@ -211,22 +219,44 @@ class SequentialMCExperimentRunner:
         n_steps      = int(self.params.get("pc_n_steps", 8))
         n_max_steps  = int(self.params.get("pc_n_max_steps", 80))
         keep_max     = int(self.params.get("keep_max", 4096))
+        sampling_mode = str(self.params.get("sampling_mode", "truncated_persistent"))
         precond      = bool(self.params.get("precondition", True))
         dynamic      = bool(self.params.get("dynamic", True))
         metric       = str(self.params.get("metric", "ess"))
         resample     = str(self.params.get("resample", "mult"))
         transform    = str(self.params.get("transform", "probit"))
+        delayed_acceptance = bool(self.params.get("delayed_acceptance", False))
+        da_c_const = float(self.params.get("da_c_const", 0.01))
+        da_d_const = float(self.params.get("da_d_const", 2.0))
 
         # build sampler
-        cfg = SamplerConfigJAX(n_dim=dim, n_effective=n_effective, n_active=n_active,
-                               n_prior=n_prior, n_total=n_total, n_steps=n_steps,
-                               n_max_steps=n_max_steps, keep_max=keep_max, blob_dim=0,
-                               preconditioned=precond, dynamic=dynamic, metric=metric,
-                               resample=resample, transform=transform, enable_flow_evidence=False,)
+        cfg = SamplerConfigJAX(
+            n_dim=dim,
+            n_effective=n_effective,
+            n_active=n_active,
+            n_prior=n_prior,
+            n_total=n_total,
+            n_steps=n_steps,
+            n_max_steps=n_max_steps,
+            keep_max=keep_max,
+            sampling_mode=sampling_mode,
+            blob_dim=0,
+            preconditioned=precond,
+            dynamic=dynamic,
+            metric=metric,
+            resample=resample,
+            transform=transform,
+            enable_flow_evidence=False,
+
+            # delayed acceptance
+            delayed_acceptance=delayed_acceptance,
+            da_c_const=da_c_const,
+            da_d_const=da_d_const,
+            )        
 
         # use dummy flow
         flow_obj = IdentityFlowJAX(cfg.n_dim) if bool(self.params.get("use_identity_flow", True)) else self.flow
-        sampler = SamplerJAX(prior, loglike_single, cfg, flow=flow_obj)
+        sampler = SamplerJAX(prior, loglike_single, cfg, flow=flow_obj, loglike_approx_single_fn=loglike_approx_single,)
 
         # run sampler
         random_state = int(self.params.get("random_state", 0))
@@ -269,6 +299,7 @@ class SequentialMCExperimentRunner:
                         "logZerr": logZerr, "out": out, "posterior": post, "params": self.params,}
 
         print("Sampling complete!")
+        print("sampling_mode =", sampling_mode)
         print("n_prior (adjusted) =", n_prior, "(input was", n_prior_in, ")")
         print("samples.shape =", samples.shape)
         print("logZ =", logZ, "logZerr =", logZerr)
@@ -629,6 +660,66 @@ class SequentialMCExperimentRunner:
 
 
 
+#def main():
+#    args = parser.parse_args()
+#    runner = SequentialMCExperimentRunner(args)
+#    runner.run_experiment()
+#    runner.plot_true_vs_mcmc_corner()
+#    runner.save_samples_json()
+#    runner.compute_and_save_sample_statistics()
+#    runner.kl_metrics()
+#    runner.plot_top6_diagnostics_a4_2pages()
+
+
+#if __name__ == "__main__":
+#    main()
+
+
+
+sys.argv = [
+
+    # where to save
+    "notebook",
+    "--experiment-type", "gaussian",
+    "--outdir", "/home/obevza/jaxpsmc/numerical_experiments/gaussian_10",
+
+    # parameters of the experiments
+    "--n-dims", "10",
+    "--nr-of-samples", "10000",
+    "--nr-of-components", "5",
+    "--width-mean", "10.0",
+    "--width-cov", "1.0",
+    "--weights-of-components", "0.20", "0.20", "0.20", "0.20", "0.20",
+
+    # define bounds
+    "--prior-low", "-30.0",
+    "--prior-high", "30.0",
+
+    # define number of particles
+    "--n-effective", "4000",
+    "--n-active", "2000",
+    "--n-prior", "60000",
+
+    # define steps
+    "--n-total", "10000",
+    "--pc-n-steps", "200",
+    "--pc-n-max-steps", "800",
+    "--keep-max", "30000",
+    "--sampling-mode", "persistent",  #  "truncated_persistent",
+    "--random-state", "0",
+
+    # define metrics
+    "--metric", "ess",
+    "--resample", "mult",
+    "--transform", "probit",
+    "--use-identity-flow",
+
+    # delayed acceptance
+    "--delayed-acceptance",
+    "--da-c-const", "0.01",
+    "--da-d-const", "2.0",
+]
+
 def main():
     args = parser.parse_args()
     runner = SequentialMCExperimentRunner(args)
@@ -639,60 +730,4 @@ def main():
     runner.kl_metrics()
     runner.plot_top6_diagnostics_a4_2pages()
 
-
-if __name__ == "__main__":
-    main()
-
-
-
-#sys.argv = [
-
-    # where to save
-#    "notebook",
-#    "--experiment-type", "gaussian",
-#    "--outdir", "/home/obevza/jaxpsmc/numerical_experiments/gaussian_10",
-
-    # parameters of the experiments
-#    "--n-dims", "15",
-#    "--nr-of-samples", "10000",
-#    "--nr-of-components", "6",
-#    "--width-mean", "10.0",
-#    "--width-cov", "1.0",
-#    "--weights-of-components", "0.17", "0.17", "0.17", "0.17", "0.17", "0.15", 
-
-    # define bounds
-#    "--prior-low", "-30.0",
-#    "--prior-high", "30.0",
-
-    # define number of particles
-#    "--n-effective", "10000",
-#    "--n-active", "10000",
-#    "--n-prior", "280000",
-
-    # define steps
-#    "--n-total", "10000",
-#    "--pc-n-steps", "550",
-#    "--pc-n-max-steps", "850",
-#    "--keep-max", "30000",
-#    "--random-state", "0",
-
-    # define metrics
-#    "--metric", "ess",
-#    "--resample", "mult",
-#    "--transform", "probit",
-#    "--use-identity-flow",
-#]
-
-#def main():
-#    args = parser.parse_args()
-#    runner = SequentialMCExperimentRunner(args)
-#    runner.run_experiment()
-#    runner.plot_true_vs_mcmc_corner()
-#    runner.plot_acceptance_rate()
-#    runner.save_samples_json()
-#    runner.compute_and_save_sample_statistics()
-#    runner.kl_metrics()
-#    runner.plot_sigma()
-#    runner.plot_top6_diagnostics_a4_2pages()
-
-# main()
+main()
