@@ -78,7 +78,47 @@ parser.add_argument("--bisect-steps", type=int, default=1000)
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
 parser.add_argument("--da-d-const", type=float, default=2.0, help="Conservative delayed-acceptance d constant.",)
+# li_likelihood
+# mutation kernel
+parser.add_argument(
+    "--kernel",
+    type=str,
+    default="pcn",
+    choices=["pcn", "li_pcn", "none"],
+    help="Mutation kernel: pcn, li_pcn, or none.",
+)
 
+# empirical likelihood-informed pCN options
+parser.add_argument(
+    "--li-rank",
+    type=int,
+    default=8,
+    help="Rank of empirical likelihood-informed subspace for li_pcn.",
+)
+parser.add_argument(
+    "--li-lis-scale",
+    type=float,
+    default=1.0,
+    help="Proposal scale multiplier inside empirical LIS.",
+)
+parser.add_argument(
+    "--li-cs-scale",
+    type=float,
+    default=1.0,
+    help="Proposal scale multiplier in complement subspace.",
+)
+parser.add_argument(
+    "--li-var-floor",
+    type=float,
+    default=1e-8,
+    help="Variance floor for empirical LI-pCN covariance eigenvalues.",
+)
+parser.add_argument(
+    "--li-complement-var",
+    type=float,
+    default=1.0,
+    help="Reference variance used in the complement subspace.",
+)
 
 
 
@@ -563,6 +603,14 @@ def run_event_and_save_posteriors(
     if loglike_approx_x is None:
         loglike_approx_x = loglike_x
 
+    kernel = str(args.kernel)
+    li_rank = int(args.li_rank)
+    li_lis_scale = float(args.li_lis_scale)
+    li_cs_scale = float(args.li_cs_scale)
+    li_var_floor = float(args.li_var_floor)
+    li_complement_var = float(args.li_complement_var)
+
+
     seed     = int(args.random_state)
     n_keep   = int(args.nr_of_samples)   
     out_root = str(args.outdir)          
@@ -578,6 +626,15 @@ def run_event_and_save_posteriors(
         n_steps=n_steps,
         n_max_steps=n_max_steps,
         proposal_scale=proposal_scale,
+
+        # kernel
+        kernel=kernel,
+        li_rank=li_rank,
+        li_lis_scale=li_lis_scale,
+        li_cs_scale=li_cs_scale,
+        li_var_floor=li_var_floor,
+        li_complement_var=li_complement_var,
+
         sampling_mode=sampling_mode,
         keep_max=keep_max,
         trim_ess=trim_ess,
@@ -596,7 +653,7 @@ def run_event_and_save_posteriors(
         delayed_acceptance=delayed_acceptance,
         da_c_const=da_c_const,
         da_d_const=da_d_const,
-        )
+    )
 
     t0 = time.time()
 
@@ -637,6 +694,13 @@ def run_event_and_save_posteriors(
     logZerr = float(np.asarray(out.logz_err))
 
     print("Sampling complete!")
+    print("kernel =", kernel)
+    if kernel == "li_pcn":
+        print("li_rank =", li_rank)
+        print("li_lis_scale =", li_lis_scale)
+        print("li_cs_scale =", li_cs_scale)
+        print("li_var_floor =", li_var_floor)
+        print("li_complement_var =", li_complement_var)
     print("sampling_mode =", sampling_mode)
     print("n_prior (adjusted) =", n_prior, "(input was", n_prior_in, ")")
     print("samples.shape =", theta_physical.shape)
@@ -659,6 +723,12 @@ def run_event_and_save_posteriors(
         "logz_err": float(logZerr),
         "seed": int(seed),
         "sampling_mode": str(sampling_mode),
+        "kernel": str(kernel),
+        "li_rank": int(li_rank),
+        "li_lis_scale": float(li_lis_scale),
+        "li_cs_scale": float(li_cs_scale),
+        "li_var_floor": float(li_var_floor),
+        "li_complement_var": float(li_complement_var),
         "note": "Posterior draws from sampler (physical space)",
     }
 
@@ -807,7 +877,7 @@ def main(argv=None):
 
 sys.argv = [
     "notebook",
-    "--outdir", "/home/obevza/jaxpsmc/GW_examples",       
+    "--outdir", "/home/obevza/jaxpsmc/GW_examples_17_05",       
     "--nr-of-samples", "10000",        
 
     "--n-effective", "7000",
@@ -818,7 +888,7 @@ sys.argv = [
     "--pc-n-steps", "450",
     "--pc-n-max-steps", "1000",
     "--keep-max", "30000",
-    "--sampling-mode", "persistent",   # "persistent", "truncated_persistent",
+    "--sampling-mode", "truncated_persistent",    # "persistent", "truncated_persistent",
     "--random-state", "0",
 
     "--metric", "ess",
@@ -831,9 +901,17 @@ sys.argv = [
     "--bisect-steps", "1000",
 
     # delayed acceptance
-    #"--delayed-acceptance",
+    "--delayed-acceptance",
     #"--da-c-const", "0.01",
     #"--da-d-const", "2.0",
+
+    # mutation kernel
+    "--kernel", "pcn",        #"li_pcn", "pcn",
+    #"--li-rank", "8",
+    #"--li-lis-scale", "1.0",
+    #"--li-cs-scale", "1.0",
+    #"--li-var-floor", "1e-8",
+    #"--li-complement-var", "1.0",
 ]
 
 args = parser.parse_args()
