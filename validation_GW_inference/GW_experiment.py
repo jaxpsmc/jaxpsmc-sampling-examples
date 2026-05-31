@@ -78,47 +78,33 @@ parser.add_argument("--bisect-steps", type=int, default=1000)
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
 parser.add_argument("--da-d-const", type=float, default=2.0, help="Conservative delayed-acceptance d constant.",)
-# li_likelihood
 # mutation kernel
-parser.add_argument(
-    "--kernel",
-    type=str,
-    default="pcn",
-    choices=["pcn", "li_pcn", "none"],
-    help="Mutation kernel: pcn, li_pcn, or none.",
-)
-
+parser.add_argument("--kernel", type=str, default="pcn", choices=["pcn", "li_pcn", "dili_pcn"],
+    help="Mutation kernel: pcn, li_pcn, dili_pcn.",)
 # empirical likelihood-informed pCN options
-parser.add_argument(
-    "--li-rank",
-    type=int,
-    default=8,
-    help="Rank of empirical likelihood-informed subspace for li_pcn.",
-)
-parser.add_argument(
-    "--li-lis-scale",
-    type=float,
-    default=1.0,
-    help="Proposal scale multiplier inside empirical LIS.",
-)
-parser.add_argument(
-    "--li-cs-scale",
-    type=float,
-    default=1.0,
-    help="Proposal scale multiplier in complement subspace.",
-)
-parser.add_argument(
-    "--li-var-floor",
-    type=float,
-    default=1e-8,
-    help="Variance floor for empirical LI-pCN covariance eigenvalues.",
-)
-parser.add_argument(
-    "--li-complement-var",
-    type=float,
-    default=1.0,
-    help="Reference variance used in the complement subspace.",
-)
+parser.add_argument("--li-rank", type=int, default=8, 
+    help="Rank of empirical likelihood-informed subspace for li_pcn.",)
+parser.add_argument("--li-lis-scale", type=float, default=1.0,
+    help="Proposal scale multiplier inside empirical LIS.",)
+parser.add_argument("--li-cs-scale", type=float, default=1.0,
+    help="Proposal scale multiplier in complement subspace.",)
+parser.add_argument("--li-var-floor", type=float, default=1e-8,
+    help="Variance floor for empirical LI-pCN covariance eigenvalues.",)
+parser.add_argument("--li-complement-var", type=float, default=1.0,
+    help="Reference variance used in the complement subspace.",)
+
+
+
+# Hessian/GNH-based DILI-pCN options
+parser.add_argument("--dili-rank", type=int, default=4)
+parser.add_argument("--dili-n-lis-particles", type=int, default=8)
+parser.add_argument("--dili-lis-scale", type=float, default=1.0)
+parser.add_argument("--dili-cs-scale", type=float, default=1.0)
+parser.add_argument("--dili-gnh-floor", type=float, default=1e-10)
+parser.add_argument("--dili-cov-floor", type=float, default=1e-8)
+parser.add_argument("--dili-complement-var", type=float, default=1.0)
+parser.add_argument("--dili-autodiff-gnh", action="store_true", default=False,
+    help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.",)
 
 
 
@@ -160,6 +146,7 @@ for ifo in ifos:
     # set an NFFT corresponding to the analysis segment duration
     psd_fftlength = data.duration * data.sampling_frequency
     ifo.set_psd(psd_data.to_psd(nperseg=psd_fftlength))
+
 
 ###########################################
 ########## Set up waveform ################
@@ -610,6 +597,24 @@ def run_event_and_save_posteriors(
     li_var_floor = float(args.li_var_floor)
     li_complement_var = float(args.li_complement_var)
 
+    dili_rank = int(args.dili_rank)
+    dili_n_lis_particles = int(args.dili_n_lis_particles)
+    dili_lis_scale = float(args.dili_lis_scale)
+    dili_cs_scale = float(args.dili_cs_scale)
+    dili_gnh_floor = float(args.dili_gnh_floor)
+    dili_cov_floor = float(args.dili_cov_floor)
+    dili_complement_var = float(args.dili_complement_var)
+    dili_autodiff_gnh = bool(args.dili_autodiff_gnh)
+
+    if kernel == "dili_pcn":
+        if not dili_autodiff_gnh:
+            raise ValueError(
+                "For this experiment script, use --dili-autodiff-gnh with kernel='dili_pcn', "
+                "unless you modify the script to pass a custom local_gnh_fn."
+            )
+        if dili_n_lis_particles > keep_max:
+            raise ValueError("--dili-n-lis-particles must be <= --keep-max.")
+
 
     seed     = int(args.random_state)
     n_keep   = int(args.nr_of_samples)   
@@ -634,6 +639,16 @@ def run_event_and_save_posteriors(
         li_cs_scale=li_cs_scale,
         li_var_floor=li_var_floor,
         li_complement_var=li_complement_var,
+
+        # Hessian/GNH-based DILI-pCN
+        dili_rank=dili_rank,
+        dili_n_lis_particles=dili_n_lis_particles,
+        dili_lis_scale=dili_lis_scale,
+        dili_cs_scale=dili_cs_scale,
+        dili_gnh_floor=dili_gnh_floor,
+        dili_cov_floor=dili_cov_floor,
+        dili_complement_var=dili_complement_var,
+        dili_autodiff_gnh=dili_autodiff_gnh,
 
         sampling_mode=sampling_mode,
         keep_max=keep_max,
@@ -701,10 +716,20 @@ def run_event_and_save_posteriors(
         print("li_cs_scale =", li_cs_scale)
         print("li_var_floor =", li_var_floor)
         print("li_complement_var =", li_complement_var)
-    print("sampling_mode =", sampling_mode)
-    print("n_prior (adjusted) =", n_prior, "(input was", n_prior_in, ")")
-    print("samples.shape =", theta_physical.shape)
-    print("logZ =", logZ, "logZerr =", logZerr)
+
+    if kernel == "dili_pcn":
+        print("dili_rank =", dili_rank)
+        print("dili_n_lis_particles =", dili_n_lis_particles)
+        print("dili_lis_scale =", dili_lis_scale)
+        print("dili_cs_scale =", dili_cs_scale)
+        print("dili_gnh_floor =", dili_gnh_floor)
+        print("dili_cov_floor =", dili_cov_floor)
+        print("dili_complement_var =", dili_complement_var)
+        print("dili_autodiff_gnh =", dili_autodiff_gnh)
+        print("sampling_mode =", sampling_mode)
+        print("n_prior (adjusted) =", n_prior, "(input was", n_prior_in, ")")
+        print("samples.shape =", theta_physical.shape)
+        print("logZ =", logZ, "logZerr =", logZerr)
 
     # save
     outdir = next_run_dir(os.path.join(out_root, event_name))
@@ -730,6 +755,15 @@ def run_event_and_save_posteriors(
         "li_var_floor": float(li_var_floor),
         "li_complement_var": float(li_complement_var),
         "note": "Posterior draws from sampler (physical space)",
+
+        "dili_rank": int(dili_rank),
+        "dili_n_lis_particles": int(dili_n_lis_particles),
+        "dili_lis_scale": float(dili_lis_scale),
+        "dili_cs_scale": float(dili_cs_scale),
+        "dili_gnh_floor": float(dili_gnh_floor),
+        "dili_cov_floor": float(dili_cov_floor),
+        "dili_complement_var": float(dili_complement_var),
+        "dili_autodiff_gnh": bool(dili_autodiff_gnh),
     }
 
     with h5py.File(h5_path, "w") as f_h5:
@@ -877,12 +911,12 @@ def main(argv=None):
 
 sys.argv = [
     "notebook",
-    "--outdir", "/home/obevza/jaxpsmc/GW_examples_17_05",       
+    "--outdir", "/home/obevza/jaxpsmc/GW_examples_23_05",       
     "--nr-of-samples", "10000",        
 
-    "--n-effective", "7000",
-    "--n-active", "3500",
-    "--n-prior", "175000",
+    "--n-effective", "9000",
+    "--n-active", "4000",
+    "--n-prior", "180000",
 
     "--n-total", "10000",
     "--pc-n-steps", "450",
@@ -900,18 +934,12 @@ sys.argv = [
     "--bins", "1000",
     "--bisect-steps", "1000",
 
-    # delayed acceptance
+    # delayed acceptance    
     "--delayed-acceptance",
-    #"--da-c-const", "0.01",
-    #"--da-d-const", "2.0",
 
     # mutation kernel
-    "--kernel", "pcn",        #"li_pcn", "pcn",
-    #"--li-rank", "8",
-    #"--li-lis-scale", "1.0",
-    #"--li-cs-scale", "1.0",
-    #"--li-var-floor", "1e-8",
-    #"--li-complement-var", "1.0",
+    "--kernel", "dili_pcn",        #"li_pcn", "pcn", "dili_pcn",
+    "--dili-autodiff-gnh",          # you have to use it with dili_pcn
 ]
 
 args = parser.parse_args()
