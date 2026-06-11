@@ -1,3 +1,6 @@
+import jax
+jax.config.update("jax_enable_x64", True)
+
 # diagnostics
 import os
 import sys
@@ -67,6 +70,42 @@ parser.add_argument("--use-identity-flow", action="store_true", default=True)
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
 parser.add_argument("--da-d-const", type=float, default=2.0,)
+
+parser.add_argument("--kernel", type=str, default="pcn", choices=["pcn", "li_pcn", "dili_pcn"],
+    help="Mutation kernel: pcn, li_pcn, dili_pcn.")
+
+# empirical likelihood-informed pCN options
+parser.add_argument("--li-rank", type=int, default=8, 
+    help="Rank of empirical likelihood-informed subspace for li_pcn.")
+parser.add_argument("--li-lis-scale", type=float, default=1.0,
+    help="Proposal scale multiplier inside empirical LIS.")
+parser.add_argument("--li-cs-scale", type=float, default=1.0,
+    help="Proposal scale multiplier in complement subspace.")
+parser.add_argument("--li-var-floor", type=float, default=1e-8,
+    help="Variance floor for empirical LI-pCN covariance eigenvalues.")
+parser.add_argument("--li-complement-var", type=float, default=1.0,
+    help="Reference variance used in the complement subspace.")
+
+# Hessian/GNH-based DILI-pCN options
+parser.add_argument("--dili-rank", type=int, default=4)
+parser.add_argument("--dili-n-lis-particles", type=int, default=8)
+parser.add_argument("--dili-lis-scale", type=float, default=1.0)
+parser.add_argument("--dili-cs-scale", type=float, default=1.0)
+parser.add_argument("--dili-gnh-floor", type=float, default=1e-10)
+parser.add_argument("--dili-cov-floor", type=float, default=1e-8)
+parser.add_argument("--dili-complement-var", type=float, default=1.0)
+parser.add_argument("--dili-autodiff-gnh", action="store_true", default=False,
+    help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.")
+
+# additional sampling params
+parser.add_argument("--proposal-scale", type=float, default=0.0)
+parser.add_argument("--trim-ess", type=float, default=0.99)
+parser.add_argument("--bins", type=int, default=1000)
+parser.add_argument("--bisect-steps", type=int, default=1000)
+
+
+
+
 
 
 
@@ -229,7 +268,6 @@ class SequentialMCExperimentRunner:
         da_c_const = float(self.params.get("da_c_const", 0.01))
         da_d_const = float(self.params.get("da_d_const", 2.0))
 
-        # build sampler
         cfg = SamplerConfigJAX(
             n_dim=dim,
             n_effective=n_effective,
@@ -238,8 +276,31 @@ class SequentialMCExperimentRunner:
             n_total=n_total,
             n_steps=n_steps,
             n_max_steps=n_max_steps,
-            keep_max=keep_max,
+            proposal_scale=float(self.params.get("proposal_scale", 0.0)),
+    
+            # kernel options
+            kernel=str(self.params.get("kernel", "pcn")),
+            li_rank=int(self.params.get("li_rank", 8)),
+            li_lis_scale=float(self.params.get("li_lis_scale", 1.0)),
+            li_cs_scale=float(self.params.get("li_cs_scale", 1.0)),
+            li_var_floor=float(self.params.get("li_var_floor", 1e-8)),
+            li_complement_var=float(self.params.get("li_complement_var", 1.0)),
+    
+            # DILI options
+            dili_rank=int(self.params.get("dili_rank", 4)),
+            dili_n_lis_particles=int(self.params.get("dili_n_lis_particles", 8)),
+            dili_lis_scale=float(self.params.get("dili_lis_scale", 1.0)),
+            dili_cs_scale=float(self.params.get("dili_cs_scale", 1.0)),
+            dili_gnh_floor=float(self.params.get("dili_gnh_floor", 1e-10)),
+            dili_cov_floor=float(self.params.get("dili_cov_floor", 1e-8)),
+            dili_complement_var=float(self.params.get("dili_complement_var", 1.0)),
+            dili_autodiff_gnh=bool(self.params.get("dili_autodiff_gnh", False)),
+    
             sampling_mode=sampling_mode,
+            keep_max=keep_max,
+            trim_ess=float(self.params.get("trim_ess", 0.99)),
+            bins=int(self.params.get("bins", 1000)),
+            bisect_steps=int(self.params.get("bisect_steps", 1000)),
             blob_dim=0,
             preconditioned=precond,
             dynamic=dynamic,
@@ -247,12 +308,12 @@ class SequentialMCExperimentRunner:
             resample=resample,
             transform=transform,
             enable_flow_evidence=False,
-
+    
             # delayed acceptance
             delayed_acceptance=delayed_acceptance,
             da_c_const=da_c_const,
             da_d_const=da_d_const,
-            )        
+        )       
 
         # use dummy flow
         flow_obj = IdentityFlowJAX(cfg.n_dim) if bool(self.params.get("use_identity_flow", True)) else self.flow
@@ -684,28 +745,28 @@ sys.argv = [
     "--outdir", "/home/obevza/jaxpsmc/numerical_experiments/gaussian_10",
 
     # parameters of the experiments
-    "--n-dims", "10",
+    "--n-dims", "5",
     "--nr-of-samples", "10000",
-    "--nr-of-components", "5",
+    "--nr-of-components", "2",
     "--width-mean", "10.0",
     "--width-cov", "1.0",
-    "--weights-of-components", "0.20", "0.20", "0.20", "0.20", "0.20",
+    "--weights-of-components", "0.5", "0.5", 
 
     # define bounds
     "--prior-low", "-30.0",
     "--prior-high", "30.0",
 
     # define number of particles
-    "--n-effective", "4000",
-    "--n-active", "2000",
-    "--n-prior", "60000",
+    "--n-effective", "2000",
+    "--n-active", "1000",
+    "--n-prior", "20000",
 
     # define steps
     "--n-total", "10000",
     "--pc-n-steps", "200",
     "--pc-n-max-steps", "800",
-    "--keep-max", "30000",
-    "--sampling-mode", "persistent",  #  "truncated_persistent",
+    "--keep-max", "20000",
+    "--sampling-mode", "truncated_persistent",  #  "truncated_persistent",
     "--random-state", "0",
 
     # define metrics
@@ -714,10 +775,20 @@ sys.argv = [
     "--transform", "probit",
     "--use-identity-flow",
 
+    # proposal params (add these)
+    "--proposal-scale", "0.0",
+    "--trim-ess", "0.99",
+    "--bins", "1000",
+    "--bisect-steps", "1000",
+
     # delayed acceptance
     "--delayed-acceptance",
-    "--da-c-const", "0.01",
-    "--da-d-const", "2.0",
+    #"--da-c-const", "0.01",
+    #"--da-d-const", "2.0",
+
+    # kernel - test li_pcn or dili_pcn
+    "--kernel", "pcn",   # "pcn" "li_pcn"
+    "--dili-autodiff-gnh",  # for DILI
 ]
 
 def main():
