@@ -4,21 +4,16 @@ jax.config.update("jax_enable_x64", True)
 # diagnostics
 import os
 import sys
-import json
 import re
 import argparse
 import numpy as np
-import matplotlib.pyplot as plt
-import corner
-from matplotlib.backends.backend_pdf import PdfPages
-import logging
-logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
 # jax 
 import jax
 import jax.numpy as jnp
 # my helpers
 from NUMlikelihood import *
 from NUMgaussian_mixture import *
+from NUMdiagnostics import Diagnostics
 # jaxpsmc
 from jaxpsmc import (
     Prior,
@@ -31,24 +26,34 @@ from jaxpsmc import (
 
 
 """
-Code for generating and running numerical experiments with jaxpsmc
+Code for running Gaussian numerical experiments with jaxpsmc
 """
 
 SUPPORTED_EXPERIMENTS = ["gaussian"]
 ### the argparse is used to store and process any user input we want to pass on
 parser = argparse.ArgumentParser(description="Run experiment with specified parameters.")
-parser.add_argument("--experiment-type", choices=["gaussian", "dualmoon", "rosenbrock"], required=True, help="Which experiment to run.")
-parser.add_argument("--n-dims", type=int, required=True, help="Number of dimensions.")
-parser.add_argument("--outdir", type=str, required=True, help="The output directory, where things will be stored")
+parser.add_argument("--experiment-type", choices=["gaussian", "dualmoon", "rosenbrock"], required=True, 
+                    help="Which experiment to run.")
+parser.add_argument("--n-dims", type=int, required=True, 
+                    help="Number of dimensions.")
+parser.add_argument("--outdir", type=str, required=True, 
+                    help="The output directory, where things will be stored")
 # everything below here are hyperparameters for the Gaussian experiment
-parser.add_argument("--nr-of-samples", type=int, default=10000, help="Number of samples to be geerated")
-parser.add_argument("--nr-of-components", type=int, default=2, help="Number of components to be geerated")
-parser.add_argument("--width-mean", type=float, default=10.0, help="The width of mean")
-parser.add_argument("--width-cov", type=float, default=3.0, help="The width of cov")
-parser.add_argument("--weights-of-components", nargs="+", type=float, default=None, help="If omitted, uses equal weights.")
+parser.add_argument("--nr-of-samples", type=int, default=10000, 
+                    help="Number of samples to be geerated")
+parser.add_argument("--nr-of-components", type=int, default=2, 
+                    help="Number of components to be geerated")
+parser.add_argument("--width-mean", type=float, default=10.0, 
+                    help="The width of mean")
+parser.add_argument("--width-cov", type=float, default=3.0, 
+                    help="The width of cov")
+parser.add_argument("--weights-of-components", nargs="+", type=float, default=None, 
+                    help="If omitted, uses equal weights.")
 # everything below here are hyperparameters for sampler
-parser.add_argument("--prior-low", type=float, default=-20.0, help="Prior lower bound.")
-parser.add_argument("--prior-high", type=float, default=20.0, help="Prior upper bound.")
+parser.add_argument("--prior-low", type=float, default=-20.0, 
+                    help="Prior lower bound.")
+parser.add_argument("--prior-high", type=float, default=20.0, 
+                    help="Prior upper bound.")
 parser.add_argument("--n-effective", type=int, required=True)
 parser.add_argument("--n-active", type=int, required=True)
 parser.add_argument("--n-prior", type=int, required=True)
@@ -70,22 +75,20 @@ parser.add_argument("--use-identity-flow", action="store_true", default=True)
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
 parser.add_argument("--da-d-const", type=float, default=2.0,)
-
+# available kernels 
 parser.add_argument("--kernel", type=str, default="pcn", choices=["pcn", "li_pcn", "dili_pcn"],
-    help="Mutation kernel: pcn, li_pcn, dili_pcn.")
-
+                    help="Mutation kernel: pcn, li_pcn, dili_pcn.")
 # empirical likelihood-informed pCN options
 parser.add_argument("--li-rank", type=int, default=8, 
-    help="Rank of empirical likelihood-informed subspace for li_pcn.")
+                    help="Rank of empirical likelihood-informed subspace for li_pcn.")
 parser.add_argument("--li-lis-scale", type=float, default=1.0,
-    help="Proposal scale multiplier inside empirical LIS.")
+                    help="Proposal scale multiplier inside empirical LIS.")
 parser.add_argument("--li-cs-scale", type=float, default=1.0,
-    help="Proposal scale multiplier in complement subspace.")
+                    help="Proposal scale multiplier in complement subspace.")
 parser.add_argument("--li-var-floor", type=float, default=1e-8,
-    help="Variance floor for empirical LI-pCN covariance eigenvalues.")
+                    help="Variance floor for empirical LI-pCN covariance eigenvalues.")
 parser.add_argument("--li-complement-var", type=float, default=1.0,
-    help="Reference variance used in the complement subspace.")
-
+                    help="Reference variance used in the complement subspace.")
 # Hessian/GNH-based DILI-pCN options
 parser.add_argument("--dili-rank", type=int, default=4)
 parser.add_argument("--dili-n-lis-particles", type=int, default=8)
@@ -95,8 +98,7 @@ parser.add_argument("--dili-gnh-floor", type=float, default=1e-10)
 parser.add_argument("--dili-cov-floor", type=float, default=1e-8)
 parser.add_argument("--dili-complement-var", type=float, default=1.0)
 parser.add_argument("--dili-autodiff-gnh", action="store_true", default=False,
-    help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.")
-
+                    help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.")
 # additional sampling params
 parser.add_argument("--proposal-scale", type=float, default=0.0)
 parser.add_argument("--trim-ess", type=float, default=0.99)
@@ -112,7 +114,7 @@ parser.add_argument("--bisect-steps", type=int, default=1000)
 ##################################################################################
 # 1. EXPERIMENT RUNNER
 ##################################################################################
-class SequentialMCExperimentRunner:
+class SequentialMCExperimentRunner(Diagnostics):
     """
     Base class storing everything shared between experiment
     """
@@ -368,375 +370,6 @@ class SequentialMCExperimentRunner:
         return self.results
  
 
-    #===========================================================
-    # 1.2. PLOT DIAGNOSTICS 
-    #===========================================================
-    def get_true_and_mcmc_samples(self, discard=0, thin=1):
-        dim = int(self.params["n_dims"])
-        # true samples
-        if not hasattr(self, "true_samples") or self.true_samples is None:
-            raise ValueError("No true samples found. Ensure self.true_samples is set.")
-
-        true_np = np.asarray(self.true_samples).reshape(-1, dim)
-
-        # sampler samples
-        if hasattr(self, "samples") and self.samples is not None:
-            samp = np.asarray(self.samples).reshape(-1, dim)
-            samp = samp[int(discard)::int(thin), :]
-            mcmc_np = samp
-        else:
-            raise ValueError(
-                "No sampler samples found. Run run_experiment() first. "
-            )
-
-        return true_np, mcmc_np
-    
-
-    def plot_true_vs_mcmc_corner(self, seed=2046):
-        """
-        Corner plot: ground truth vs posterior samples
-        """
-        # get samples 
-        true_np, mcmc_np = self.get_true_and_mcmc_samples()
-
-        dim = int(self.params["n_dims"])
-        labels = [f"x{i}" for i in range(dim)]
-
-        outdir = self.params["outdir"]
-        os.makedirs(outdir, exist_ok=True)
-
-        # plot posterior samples from sampler first
-        fig = corner.corner(mcmc_np, color="blue", hist_kwargs={"color": "blue", "density": True},
-                            show_titles=True, labels=labels,)
-
-        # Overlay with ground truth samples
-        corner.corner(true_np, fig=fig, color="red", hist_kwargs={"color": "red", "density": True},
-                      show_titles=True, labels=labels,)
-
-        # Legend
-        handles = [plt.Line2D([], [], color="blue", label="sampler"),
-                   plt.Line2D([], [], color="red", label="True Normal"),]
-        fig.legend(handles=handles, loc="upper right")
-
-        save_name = os.path.join(outdir, "true_vs_mcmc_corner_plot.pdf")
-        fig.savefig(save_name, bbox_inches="tight")
-        plt.close(fig)
-
-        print(f"Saved overlay corner plot to {save_name}")
-
-   
-
-    def plot_top6_diagnostics_a4_2pages(self, filename="diagnostics_top6_2pages.pdf"):
-        """
-        Function saves 2 pdf pages with plot diagnostics of the sampler
-        Page 1: beta(t), Δ beta(t), ESS(t), ESS/N_active, logZ(t), Δ logZ(t)
-        Page 2: accept(t), steps(t), sigma(t), logl quantiles, logl histogram        
-        """
-        if not hasattr(self, "out") or self.out is None:
-            raise ValueError("No JAX sampler output found. Run run_experiment() first.")
-
-        outdir = self.params["outdir"]
-        save_path = os.path.join(outdir, filename)
-
-        T = int(np.asarray(self.out.state.t))
-        if T < 2:
-            raise ValueError(f"Not enough iterations recorded (t={T}).")
-
-        it = np.arange(T)
-
-        beta   = np.asarray(self.out.state.beta[:T]).reshape(-1)
-        ess    = np.asarray(self.out.state.ess[:T]).reshape(-1)
-        accept = np.asarray(self.out.state.accept[:T]).reshape(-1)
-        steps  = np.asarray(self.out.state.steps[:T]).reshape(-1)
-        logz   = np.asarray(self.out.state.logz[:T]).reshape(-1)
-        logl_hist = np.asarray(self.out.state.logl[:T])  # (T, N)
-
-        dbeta = np.diff(beta, prepend=beta[0])
-        dlogz = np.diff(logz, prepend=logz[0])
-
-        n_active = int(self.params["n_active"])
-        ess_ratio = ess / max(1, n_active)
-
-        # sigma reconstruction from efficiency (exclude warmup beta==0)
-        dim = int(self.params["n_dims"])
-        norm_ref = 2.38 / np.sqrt(dim)
-        eff = np.asarray(self.out.state.efficiency[:T]).reshape(-1)
-
-        mask = beta > 0.0
-        it_m = it[mask]
-        sigma = eff[mask] * norm_ref
-        accept_m = accept[mask]
-
-        # logl quantiles
-        q_lo, q_hi = 0.10, 0.90
-        q50 = np.quantile(logl_hist, 0.50, axis=1)
-        qL  = np.quantile(logl_hist, q_lo, axis=1)
-        qH  = np.quantile(logl_hist, q_hi, axis=1)
-
-        # helpers
-        def _page():
-            fig = plt.figure(figsize=(8.27, 11.69))
-            gs = fig.add_gridspec(3, 2, left=0.09, right=0.97, top=0.92, bottom=0.06, 
-                                  hspace=0.35, wspace=0.28)
-            return fig, gs
-
-        with PdfPages(save_path) as pdf:
-            # PAGE 1: beta, ESS, logZ
-            fig, gs = _page()
-            fig.suptitle("SMC Diagnostics: Page 1/2", fontsize=14)
-
-            # (1a) beta(t)
-            ax = fig.add_subplot(gs[0, 0])
-            ax.plot(it, beta, marker="o", linewidth=1)
-            ax.set_title("1) beta(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("beta")
-            ax.set_ylim(min(-0.02, beta.min()), max(1.02, beta.max()))
-
-            # (1b) Δbeta(t)
-            ax = fig.add_subplot(gs[0, 1])
-            ax.plot(it, dbeta, marker="o", linewidth=1)
-            ax.set_title("Δ beta(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("Δ beta")
-
-            # (2a) ESS(t)
-            ax = fig.add_subplot(gs[1, 0])
-            ax.plot(it, ess, marker="o", linewidth=1)
-            ax.axhline(n_active, linestyle="--", linewidth=1)
-            ax.set_title("2) ESS(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("ESS")
-
-            # (2b) ESS/N_active
-            ax = fig.add_subplot(gs[1, 1])
-            ax.plot(it, ess_ratio, marker="o", linewidth=1)
-            ax.axhline(1.0, linestyle="--", linewidth=1)
-            ax.set_title("ESS / N_active")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("ESS/N")
-
-            # (5a) logZ(t)
-            ax = fig.add_subplot(gs[2, 0])
-            ax.plot(it, logz, marker="o", linewidth=1)
-            ax.set_title("3) logZ(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("logZ")
-
-            # (5b) ΔlogZ(t)
-            ax = fig.add_subplot(gs[2, 1])
-            ax.plot(it, dlogz, marker="o", linewidth=1)
-            ax.set_title("Δ logZ(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("Δ logZ")
-
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close(fig)
-
-            # PAGE 2: accept/steps, sigma, logl
-            fig, gs = _page()
-            fig.suptitle("SMC Diagnostics: Page 2/2", fontsize=14)
-
-            # (3) accept(t)
-            ax = fig.add_subplot(gs[0, 0])
-            ax.plot(it, accept, marker="o", linewidth=1)
-            ax.set_title("4) accept(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("accept")
-            ax.set_ylim(0.0, 1.0)
-
-            # (3b) steps(t)
-            ax = fig.add_subplot(gs[0, 1])
-            ax.plot(it, steps, marker="o", linewidth=1)
-            ax.set_title("steps(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("steps used")
-
-            # (4) sigma(t)
-            ax = fig.add_subplot(gs[1, 0])
-            ax.plot(it_m, sigma, marker="o", linewidth=1)
-            ax.set_title("5) sigma(t) (reconstructed, beta>0)")
-            ax.set_xlabel("SMC iteration (beta>0)")
-            ax.set_ylabel("sigma")
-
-            # (4b) accept vs sigma scatter
-            ax = fig.add_subplot(gs[1, 1])
-            ax.scatter(sigma, accept_m, s=16, alpha=0.7)
-            ax.set_title("accept vs sigma")
-            ax.set_xlabel("sigma")
-            ax.set_ylabel("accept")
-            ax.set_ylim(0.0, 1.0)
-
-            # (6) logl quantiles(t)
-            ax = fig.add_subplot(gs[2, 0])
-            ax.plot(it, q50, linewidth=1.5, label="median")
-            ax.fill_between(it, qL, qH, alpha=0.3, label="10–90%")
-            ax.set_title("6) logl quantiles(t)")
-            ax.set_xlabel("SMC iteration")
-            ax.set_ylabel("log-likelihood")
-            ax.legend(fontsize=9)
-
-            # (6b) final logl histogram
-            ax = fig.add_subplot(gs[2, 1])
-            ax.hist(logl_hist[-1], bins=25)
-            ax.set_title("final logl histogram")
-            ax.set_xlabel("log-likelihood")
-            ax.set_ylabel("count")
-
-            pdf.savefig(fig, bbox_inches="tight")
-            plt.close(fig)
-
-        print(f"Saved two-page diagnostics to {save_path}")
-
-
-    #===========================================================
-    # 1.3. SAMPLE STATISTICS
-    #===========================================================
-    def save_samples_json(self):
-        # output directory 
-        outdir = self.params["outdir"]
-        os.makedirs(outdir, exist_ok=True)
-
-        # get samples once
-        true_np, mcmc_np = self.get_true_and_mcmc_samples()
-
-        # save generated samples
-        mcmc_path = os.path.join(outdir, "mcmc_samples.json")
-        with open(mcmc_path, "w", encoding="utf-8") as f:
-            json.dump(mcmc_np.tolist(), f)
-        print(f"MCMC samples saved to {mcmc_path}")
-
-        # save true samples
-        true_path = os.path.join(outdir, "true_samples.json")
-        with open(true_path, "w", encoding="utf-8") as f:
-            json.dump(true_np.tolist(), f)
-        print(f"True samples saved to {true_path}")
-
-
-    def compute_and_save_sample_statistics(self):
-        """
-        Computes and saves means and variances per dimension for
-        ground truth and posterior samples
-        """
-        # get samples 
-        true_samples, mcmc_samples = self.get_true_and_mcmc_samples()
-        # MCMC stats
-        self.pm = mcmc_samples.mean(axis=0)
-        self.pv = mcmc_samples.var(axis=0)
-        self.ps = mcmc_samples.std(axis=0)
-        # True stats
-        self.qm = true_samples.mean(axis=0)
-        self.qv = true_samples.var(axis=0)
-        self.qs = true_samples.std(axis=0)
-        # store arrays 
-        self.mcmc_samples = mcmc_samples
-        self.true_samples_np = true_samples
-        np.set_printoptions(precision=4, suppress=True)
-
-        stats_str = ("pm (mean of MCMC samples):\n" + str(self.pm) +
-            "\n\npv (variance of MCMC samples):\n" + str(self.pv) +
-            "\n\nps (std dev of MCMC samples):\n" + str(self.ps) +
-            "\n\nqm (mean of true samples):\n" + str(self.qm) +
-            "\n\nqv (variance of true samples):\n" + str(self.qv) +
-            "\n\nqs (std dev of true samples):\n" + str(self.qs) + "\n")
-
-        outdir = self.params["outdir"]
-        os.makedirs(outdir, exist_ok=True)
-
-        stats_path = os.path.join(outdir, "sample_statistics.txt")
-        with open(stats_path, "w", encoding="utf-8") as f:
-            f.write(stats_str)
-
-        print(f"Sample statistics saved to {stats_path}")
-
-
-    #-----------------------------------------------------------------------------
-    # 1.4. KL DIVERGENCE
-    #-----------------------------------------------------------------------------
-    @staticmethod
-    def gau_kl(pm: np.ndarray, pv: np.ndarray,
-               qm: np.ndarray, qv: np.ndarray) -> float:
-        """
-        Kullback-Liebler divergence from Gaussian pm,pv to Gaussian qm,qv.
-        Also computes KL divergence from a single Gaussian pm,pv to a set
-         of Gaussians qm,qv.
-        Diagonal covariances are assumed. Divergence is expressed in nats.
-        """
-        if (len(qm.shape) == 2):
-            axis = 1
-        else:
-            axis = 0
-        # Determinants of diagonal covariances pv, qv
-        dpv = pv.prod()
-        dqv = qv.prod(axis)
-        # Inverse of diagonal covariance qv
-        iqv = 1. / qv
-        # Difference between means pm, qm
-        diff = qm - pm
-        return (0.5 * (
-            np.log(dqv / dpv)                 # log |\Sigma_q| / |\Sigma_p|
-            + (iqv * pv).sum(axis)            # + tr(\Sigma_q^{-1} * \Sigma_p)
-            + (diff * iqv * diff).sum(axis)   # + (\mu_q-\mu_p)^T\Sigma_q^{-1}(\mu_q-\mu_p)
-            - len(pm)                         # - N
-        ))
-    
-
-    def kl_metrics(
-        self,
-        outdir: str | None = None,
-        filename: str = "kl_metrics.txt",
-    ) -> None:
-
-        # define outdir
-        outdir = (
-            outdir
-            or (getattr(self, "params", {}) or {}).get("outdir", None)
-            or getattr(self, "outdir", None)
-        )
-        if outdir is None:
-            raise ValueError("No output directory specified (pass outdir=... or set params['outdir']).")
-        os.makedirs(outdir, exist_ok=True)
-
-        true_np, mcmc_np = self.get_true_and_mcmc_samples() 
-
-        # Parametric Gaussian stats (diagonal covariance assumed)
-        pm = mcmc_np.mean(axis=0)
-        pv = mcmc_np.var(axis=0)
-        qm = true_np.mean(axis=0)
-        qv = true_np.var(axis=0)
-
-        kl_val = self.gau_kl(pm, pv, qm, qv)  # scalar for 1D qm/qv
-
-        out_path = os.path.join(outdir, filename)
-        with open(out_path, "w", encoding="utf-8") as f:
-            if np.isscalar(kl_val):
-                f.write(f"Parametric KL (Gaussian): {float(kl_val):.8f}\n")
-            else:
-                kl_arr = np.asarray(kl_val).ravel()
-                f.write("Parametric KL (Gaussian):\n")
-                for i, v in enumerate(kl_arr):
-                    f.write(f"  [{i}] {float(v):.8f}\n")
-
-        print(f"KL metrics saved to {out_path}")
-
-
-
-#def main():
-#    args = parser.parse_args()
-#    runner = SequentialMCExperimentRunner(args)
-#    runner.run_experiment()
-#    runner.plot_true_vs_mcmc_corner()
-#    runner.save_samples_json()
-#    runner.compute_and_save_sample_statistics()
-#    runner.kl_metrics()
-#    runner.plot_top6_diagnostics_a4_2pages()
-
-
-#if __name__ == "__main__":
-#    main()
-
-
-
 sys.argv = [
 
     # where to save
@@ -795,10 +428,26 @@ def main():
     args = parser.parse_args()
     runner = SequentialMCExperimentRunner(args)
     runner.run_experiment()
-    runner.plot_true_vs_mcmc_corner()
+    runner.plot_corner()
     runner.save_samples_json()
-    runner.compute_and_save_sample_statistics()
+    runner.compute_statistics()
     runner.kl_metrics()
-    runner.plot_top6_diagnostics_a4_2pages()
+    runner.plot_diagnostics()
 
 main()
+
+
+
+#def main():
+#    args = parser.parse_args()
+#    runner = SequentialMCExperimentRunner(args)
+#    runner.run_experiment()
+#    runner.plot_true_vs_mcmc_corner()
+#    runner.save_samples_json()
+#    runner.compute_and_save_sample_statistics()
+#    runner.kl_metrics()
+#    runner.plot_top6_diagnostics_a4_2pages()
+
+
+#if __name__ == "__main__":
+#    main()
