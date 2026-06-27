@@ -1,9 +1,12 @@
+import os
+os.environ["JAX_ENABLE_X64"] = "True"
+import jax
+jax.config.update("jax_enable_x64", True)
+import jax.numpy as jnp
 from jaxpsmc import *
 import jimgw
 import time
-import jax
-import jax.numpy as jnp
-jax.config.update("jax_enable_x64", True)
+
 from jimgw.core.jim import Jim
 from jimgw.core.prior import (
     CombinePrior,
@@ -26,24 +29,15 @@ from jimgw.core.single_event.transforms import (
     GeocentricArrivalTimeToDetectorArrivalTimeTransform,
     GeocentricArrivalPhaseToDetectorArrivalPhaseTransform,
 )
-# diagnostics
-import os
+
+from jax.tree_util import tree_map
+from GW_diagnostics import GW_diagnostics
 import json
 import re
 import sys
 import argparse
 import logging
-logging.getLogger("matplotlib.font_manager").setLevel(logging.ERROR)
-from jax.tree_util import tree_map
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.backends.backend_pdf import PdfPages
-import corner
-import matplotlib as mpl
-mpl.rcParams["axes.grid"] = False
-import h5py
-
-
 
 
 ### the argparse is used to store and process any user input we want to pass on
@@ -414,133 +408,12 @@ prior_smc = TransformedPrior(
 
 
 ##############################################################################################
-# 3. OUTDIR AND PLOTS
+# 3. DIAGNOSTIC HELPERS
 ##############################################################################################
-def next_run_dir(root: str, prefix: str = "run") -> str:
-    os.makedirs(root, exist_ok=True)
-    k = 0
-    while True:
-        outdir = os.path.join(root, f"{prefix}_{k:03d}")
-        if not os.path.exists(outdir):
-            os.makedirs(outdir, exist_ok=False)
-            return outdir
-        k += 1
-
-
 def _block_tree(x):
     def _b(a):
         return a.block_until_ready() if hasattr(a, "block_until_ready") else a
     return tree_map(_b, x)
-
-
-
-def plot_diagnostics(out, n_active, n_dims, outdir,
-                                  filename="diagnostics_core_long.pdf"):
-    """
-    Two-page PDF with one plots:
-    Page 1: beta(t), ESS(t), logZ(t)
-    Page 2: acceptance(t). sigma(t)  
-    """
-    T = int(np.asarray(out.state.t))
-    if T < 2:
-        raise ValueError(f"Not enough iterations recorded (t={T}).")
-
-    it     = np.arange(T)
-    beta   = np.asarray(out.state.beta[:T]).reshape(-1)
-    ess    = np.asarray(out.state.ess[:T]).reshape(-1)
-    accept = np.asarray(out.state.accept[:T]).reshape(-1)
-    logz   = np.asarray(out.state.logz[:T]).reshape(-1)
-    eff    = np.asarray(out.state.efficiency[:T]).reshape(-1)
-
-    # proposal scale normalisation (same as in mutate())
-    norm_ref = 2.38 / np.sqrt(n_dims)
-    # sigma only meaningful once beta > 0
-    mask_sigma = beta > 0.0
-    it_sigma   = it[mask_sigma]
-    sigma      = eff[mask_sigma] * norm_ref
-    # useful ratios
-    ess_ratio = ess / max(1, n_active)
-    # a bit taller than A4
-    figsize = (8.27, 13.0)  # width and height 
-    save_path = os.path.join(outdir, filename)
-
-    with PdfPages(save_path) as pdf:
-        # PAGE 1: beta, ESS, logZ
-        fig, axes = plt.subplots(
-            nrows=3,
-            ncols=1,
-            figsize=figsize,
-            sharex=False,
-            constrained_layout=True,
-        )
-        fig.suptitle("SMC core diagnostics: page 1", fontsize=14)
-
-        # 1. beta(t)
-        ax = axes[0]
-        ax.plot(it, beta, marker="o", linewidth=1)
-        ax.set_title("beta(t)")
-        ax.set_xlabel("SMC iteration")
-        ax.set_ylabel("beta")
-        ax.set_ylim(min(-0.02, beta.min()), max(1.02, beta.max()))
-        ax.grid(True, alpha=0.3)
-
-        # 2. ESS(t) and ESS/N_active
-        ax = axes[1]
-        ax.plot(it, ess, marker="o", linewidth=1, label="ESS")
-        ax.plot(it, ess_ratio * n_active,
-                linestyle="--", linewidth=1,
-                label="ESS/N_active × N_active")
-        ax.axhline(n_active, linestyle=":", linewidth=1, label="N_active")
-        ax.set_title("ESS(t)")
-        ax.set_xlabel("SMC iteration")
-        ax.set_ylabel("ESS")
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=9)
-
-        # 3. logZ(t)
-        ax = axes[2]
-        ax.plot(it, logz, marker="o", linewidth=1)
-        ax.set_title("logZ(t)")
-        ax.set_xlabel("SMC iteration")
-        ax.set_ylabel("logZ")
-        ax.grid(True, alpha=0.3)
-
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
-
-        # PAGE 2: accept, sigma
-        fig, axes = plt.subplots(
-            nrows=2,
-            ncols=1,
-            figsize=figsize,
-            sharex=False,
-            constrained_layout=True,
-        )
-        fig.suptitle("SMC core diagnostics page 2", fontsize=14)
-
-        # 4. acceptance(t)
-        ax = axes[0]
-        ax.plot(it, accept, marker="o", linewidth=1)
-        ax.set_title("acceptance rate")
-        ax.set_xlabel("SMC iteration")
-        ax.set_ylabel("accept")
-        ax.set_ylim(0.0, 1.0)
-        ax.grid(True, alpha=0.3)
-
-        # 5) sigma(t) (beta > 0)
-        ax = axes[1]
-        ax.plot(it_sigma, sigma, marker="o", linewidth=1)
-        ax.set_title("proposal scale sigma(t)  (beta > 0)")
-        ax.set_xlabel("SMC iteration")
-        ax.set_ylabel("sigma")
-        ax.grid(True, alpha=0.3)
-
-        pdf.savefig(fig, bbox_inches="tight")
-        plt.close(fig)
-
-    print(f"Saved core diagnostics PDF to {save_path}")
-
-
 
 
 
@@ -731,15 +604,6 @@ def run_event_and_save_posteriors(
         print("samples.shape =", theta_physical.shape)
         print("logZ =", logZ, "logZerr =", logZerr)
 
-    # save
-    outdir = next_run_dir(os.path.join(out_root, event_name))
-    # create diagnostics PDF
-    plot_diagnostics(out, n_active=n_active, n_dims=D, outdir=outdir)
-
-
-    # save posterior in hdf5 file 
-    h5_path = os.path.join(outdir, "posterior.hdf5")
-
     meta = {
         "event": event_name,
         "parameter_names": list(prior.parameter_names),   # physical names
@@ -766,106 +630,16 @@ def run_event_and_save_posteriors(
         "dili_autodiff_gnh": bool(dili_autodiff_gnh),
     }
 
-    with h5py.File(h5_path, "w") as f_h5:
-        f_h5.create_dataset("samples", data=theta_physical)
-        f_h5.create_dataset("names", data=np.asarray(list(prior.parameter_names), dtype="S"))
-        for k, v in meta.items():
-            if k == "parameter_names":
-                f_h5.attrs[k] = ",".join(v)
-            else:
-                f_h5.attrs[k] = v
-
-    print(f"[{event_name}] wrote posterior HDF5: {h5_path}")
-
-    #1. download jims posterior HDF5 path for comparison
-    TRUE_FILE = "/home/obevza/jaxpsmc/examples/validation_GW_inference/GW150914_095045_data0_1126259462-391_analysis_H1L1_result.hdf5"
-    # match my parameters with true posteriors
-    name_map = {
-        "M_c":      "chirp_mass",
-        "q":        "mass_ratio",
-        "s1_mag":   "a_1",
-        "s1_theta": "tilt_1",
-        "s1_phi":   "phi_1",
-        "s2_mag":   "a_2",
-        "s2_theta": "tilt_2",
-        "s2_phi":   "phi_2",
-        "iota":     "iota",
-        "d_L":      "luminosity_distance",
-        "t_c":      "geocent_time",
-        "phase_c":  "phase",
-        "psi":      "psi",
-        "ra":       "ra",
-        "dec":      "dec",
-    }
-    gps_ref = 1126259462.4
-
-    def load_true_samples(true_file: str, names: list[str]) -> np.ndarray:
-        with h5py.File(true_file, "r") as f_true:
-            post_true = f_true["posterior"]
-            cols = []
-            for nm in names:
-                true_nm = name_map[nm]
-                arr = post_true[true_nm][:]
-                if nm == "t_c":
-                    arr = arr - gps_ref
-                cols.append(arr)
-        return np.column_stack(cols)
-
-    # load true samples and convert jaxpsmc samples
-    samples_true = load_true_samples(TRUE_FILE, list(prior.parameter_names))
-    samples_ours = theta_physical
-
-    # print parameter ranges
-    for i, name in enumerate(prior.parameter_names):
-        col_true = samples_true[:, i]
-        col_ours = samples_ours[:, i]
-        print(f"True {name}: min={col_true.min():.4f}, max={col_true.max():.4f}, unique={np.unique(col_true).size}")
-        print(f"Ours {name}: min={col_ours.min():.4f}, max={col_ours.max():.4f}, unique={np.unique(col_ours).size}")
-
-
-    labels_latex = [
-        r"$\mathcal{M}_c\ [M_\odot]$",
-        r"$q$",
-        r"$s_{1,\mathrm{mag}}$",
-        r"$\theta_1$",
-        r"$\phi_1$",
-        r"$s_{2,\mathrm{mag}}$",
-        r"$\theta_2$",
-        r"$\phi_2$",
-        r"$\iota$",
-        r"$d_L\ \mathrm{[Mpc]}$",
-        r"$t_c$",
-        r"$\phi_c$",
-        r"$\psi$",
-        r"$\alpha$",
-        r"$\delta$",
-    ]
-
-    fig = plt.figure(figsize=(22, 22))
-
-    fig = corner.corner(samples_true, fig=fig,
-        labels=labels_latex if len(labels_latex) == len(prior.parameter_names) else list(prior.parameter_names),
-        show_titles=True, plot_datapoints=False, plot_density=True, fill_contours=True,
-        bins=30, color="red", hist_kwargs={"density": True},)
-
-    corner.corner(samples_ours, fig=fig, plot_datapoints=False, plot_density=True, fill_contours=False,
-                  bins=30, color="blue", hist_kwargs={"density": True},)
-
-    handles = [
-        plt.Line2D([], [], color="blue", label="Sampler"),
-        plt.Line2D([], [], color="red", label="Jim"),]
-    
-    fig.legend(handles=handles, loc="upper right")
-
-    for ax in fig.get_axes():
-        ax.grid(False)
-
-    save_path = os.path.join(outdir, "corner_true_vs_mine.png")
-    fig.savefig(save_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-    print("Saved overlay corner:", save_path)
-    print(f"[{event_name}] saved {theta_physical.shape[0]} samples to: {outdir}")
+    diagnostics = GW_diagnostics(prior=prior)
+    outdir, theta_physical = diagnostics.save_outputs(
+        event_name=event_name,
+        out_root=out_root,
+        out=out,
+        theta_physical=theta_physical,
+        n_active=n_active,
+        n_dims=D,
+        meta=meta,
+    )
     return outdir, theta_physical
 
 
@@ -914,7 +688,7 @@ sys.argv = [
     "--outdir", "/home/obevza/jaxpsmc/GW_examples_23_05",       
     "--nr-of-samples", "10000",        
 
-    "--n-effective", "9000",
+    "--n-effective", "8000",
     "--n-active", "4000",
     "--n-prior", "180000",
 
@@ -938,8 +712,8 @@ sys.argv = [
     "--delayed-acceptance",
 
     # mutation kernel
-    "--kernel", "dili_pcn",        #"li_pcn", "pcn", "dili_pcn",
-    "--dili-autodiff-gnh",          # you have to use it with dili_pcn
+    "--kernel", "pcn",        #"li_pcn", "pcn", "dili_pcn",
+    #"--dili-autodiff-gnh",          # you have to use it with dili_pcn
 ]
 
 args = parser.parse_args()
