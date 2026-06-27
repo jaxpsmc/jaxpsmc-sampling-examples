@@ -26,34 +26,24 @@ from jaxpsmc import (
 
 
 """
-Code for running Gaussian numerical experiments with jaxpsmc
+Code for generating and running numerical experiments with jaxpsmc
 """
 
 SUPPORTED_EXPERIMENTS = ["gaussian"]
 ### the argparse is used to store and process any user input we want to pass on
 parser = argparse.ArgumentParser(description="Run experiment with specified parameters.")
-parser.add_argument("--experiment-type", choices=["gaussian", "dualmoon", "rosenbrock"], required=True, 
-                    help="Which experiment to run.")
-parser.add_argument("--n-dims", type=int, required=True, 
-                    help="Number of dimensions.")
-parser.add_argument("--outdir", type=str, required=True, 
-                    help="The output directory, where things will be stored")
+parser.add_argument("--experiment-type", choices=["gaussian", "dualmoon", "rosenbrock"], required=True, help="Which experiment to run.")
+parser.add_argument("--n-dims", type=int, required=True, help="Number of dimensions.")
+parser.add_argument("--outdir", type=str, required=True, help="The output directory, where things will be stored")
 # everything below here are hyperparameters for the Gaussian experiment
-parser.add_argument("--nr-of-samples", type=int, default=10000, 
-                    help="Number of samples to be geerated")
-parser.add_argument("--nr-of-components", type=int, default=2, 
-                    help="Number of components to be geerated")
-parser.add_argument("--width-mean", type=float, default=10.0, 
-                    help="The width of mean")
-parser.add_argument("--width-cov", type=float, default=3.0, 
-                    help="The width of cov")
-parser.add_argument("--weights-of-components", nargs="+", type=float, default=None, 
-                    help="If omitted, uses equal weights.")
+parser.add_argument("--nr-of-samples", type=int, default=10000, help="Number of samples to be geerated")
+parser.add_argument("--nr-of-components", type=int, default=2, help="Number of components to be geerated")
+parser.add_argument("--width-mean", type=float, default=10.0, help="The width of mean")
+parser.add_argument("--width-cov", type=float, default=3.0, help="The width of cov")
+parser.add_argument("--weights-of-components", nargs="+", type=float, default=None, help="If omitted, uses equal weights.")
 # everything below here are hyperparameters for sampler
-parser.add_argument("--prior-low", type=float, default=-20.0, 
-                    help="Prior lower bound.")
-parser.add_argument("--prior-high", type=float, default=20.0, 
-                    help="Prior upper bound.")
+parser.add_argument("--prior-low", type=float, default=-20.0, help="Prior lower bound.")
+parser.add_argument("--prior-high", type=float, default=20.0, help="Prior upper bound.")
 parser.add_argument("--n-effective", type=int, required=True)
 parser.add_argument("--n-active", type=int, required=True)
 parser.add_argument("--n-prior", type=int, required=True)
@@ -75,20 +65,22 @@ parser.add_argument("--use-identity-flow", action="store_true", default=True)
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
 parser.add_argument("--da-d-const", type=float, default=2.0,)
-# available kernels 
+
 parser.add_argument("--kernel", type=str, default="pcn", choices=["pcn", "li_pcn", "dili_pcn"],
-                    help="Mutation kernel: pcn, li_pcn, dili_pcn.")
+    help="Mutation kernel: pcn, li_pcn, dili_pcn.")
+
 # empirical likelihood-informed pCN options
 parser.add_argument("--li-rank", type=int, default=8, 
-                    help="Rank of empirical likelihood-informed subspace for li_pcn.")
+    help="Rank of empirical likelihood-informed subspace for li_pcn.")
 parser.add_argument("--li-lis-scale", type=float, default=1.0,
-                    help="Proposal scale multiplier inside empirical LIS.")
+    help="Proposal scale multiplier inside empirical LIS.")
 parser.add_argument("--li-cs-scale", type=float, default=1.0,
-                    help="Proposal scale multiplier in complement subspace.")
+    help="Proposal scale multiplier in complement subspace.")
 parser.add_argument("--li-var-floor", type=float, default=1e-8,
-                    help="Variance floor for empirical LI-pCN covariance eigenvalues.")
+    help="Variance floor for empirical LI-pCN covariance eigenvalues.")
 parser.add_argument("--li-complement-var", type=float, default=1.0,
-                    help="Reference variance used in the complement subspace.")
+    help="Reference variance used in the complement subspace.")
+
 # Hessian/GNH-based DILI-pCN options
 parser.add_argument("--dili-rank", type=int, default=4)
 parser.add_argument("--dili-n-lis-particles", type=int, default=8)
@@ -98,7 +90,8 @@ parser.add_argument("--dili-gnh-floor", type=float, default=1e-10)
 parser.add_argument("--dili-cov-floor", type=float, default=1e-8)
 parser.add_argument("--dili-complement-var", type=float, default=1.0)
 parser.add_argument("--dili-autodiff-gnh", action="store_true", default=False,
-                    help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.")
+    help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.")
+
 # additional sampling params
 parser.add_argument("--proposal-scale", type=float, default=0.0)
 parser.add_argument("--trim-ess", type=float, default=0.99)
@@ -370,6 +363,23 @@ class SequentialMCExperimentRunner(Diagnostics):
         return self.results
  
 
+
+#def main():
+#    args = parser.parse_args()
+#    runner = SequentialMCExperimentRunner(args)
+#    runner.run_experiment()
+#    runner.plot_true_vs_mcmc_corner()
+#    runner.save_samples_json()
+#    runner.compute_and_save_sample_statistics()
+#    runner.kl_metrics()
+#    runner.plot_top6_diagnostics_a4_2pages()
+
+
+#if __name__ == "__main__":
+#    main()
+
+
+
 sys.argv = [
 
     # where to save
@@ -429,25 +439,9 @@ def main():
     runner = SequentialMCExperimentRunner(args)
     runner.run_experiment()
     runner.plot_corner()
-    runner.save_samples_json()
+    #runner.save_samples_json()
     runner.compute_statistics()
-    runner.kl_metrics()
+    runner.metrics()
     runner.plot_diagnostics()
 
 main()
-
-
-
-#def main():
-#    args = parser.parse_args()
-#    runner = SequentialMCExperimentRunner(args)
-#    runner.run_experiment()
-#    runner.plot_true_vs_mcmc_corner()
-#    runner.save_samples_json()
-#    runner.compute_and_save_sample_statistics()
-#    runner.kl_metrics()
-#    runner.plot_top6_diagnostics_a4_2pages()
-
-
-#if __name__ == "__main__":
-#    main()
