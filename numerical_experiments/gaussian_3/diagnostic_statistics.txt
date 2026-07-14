@@ -1,0 +1,75 @@
+1. SAMPLE STATISTICS
+====================
+
+MCMC sample mean:
+[-4.62137   2.935295  2.013606 -5.117084 -2.633941  1.837063 -2.410665
+  0.610216  0.444087 -0.501368 -0.940177 -6.34332  -2.316283  0.820488
+ -5.52958 ]
+
+MCMC sample variance:
+[ 9.143156 10.004524  9.858389 14.157666  4.688057 18.630992 12.29332
+ 16.575319 55.782998 38.753388 31.382295  7.473817 38.552429 29.09103
+ 28.892003]
+
+MCMC sample std:
+[3.023765 3.162993 3.139807 3.762667 2.165192 4.316363 3.506183 4.07128
+ 7.468802 6.225222 5.60199  2.733828 6.20906  5.39361  5.375128]
+
+True sample mean:
+[-4.748915  2.840882  1.951613 -5.232473 -2.594265  1.694489 -2.393161
+  0.369294  0.691349 -0.813772 -0.641136 -6.321281 -2.04052   0.625998
+ -5.56694 ]
+
+True sample variance:
+[ 8.966748 10.154717  9.806609 13.686091  4.851641 19.881032 12.106288
+ 16.283014 54.856057 37.207233 30.243425  7.387666 36.773686 30.05872
+ 29.259813]
+
+True sample std:
+[2.994453 3.186647 3.131551 3.699472 2.202644 4.458815 3.479409 4.035222
+ 7.406487 6.099773 5.499402 2.718026 6.064131 5.482583 5.409234]
+
+
+2. MODE MASS RECOVERY
+=====================
+
+Mode partition: S_k = argmax_j log N(x; mean_j, cov_j)
+
+component    true_mass    sampler_mass    abs_error
+0           0.33860000   0.36210000      0.02350000
+1           0.32430000   0.30180000      0.02250000
+2           0.33710000   0.33610000      0.00100000
+
+L1 error:            0.04700000
+Mean absolute error: 0.01566667
+Max absolute error:  0.02350000
+
+
+3. PARAMETRIC GAUSSIAN KL DIVERGENCE
+====================================
+
+KL(N_mcmc || N_true), diagonal Gaussian approximation:
+0.01321469
+4. MAXIMUM MEAN DISCREPANCY
+===========================
+
+Estimator: unbiased quadratic-time MMD^2 with RBF kernel
+Median bandwidth: 27.07243970
+
+bandwidth        sigma           MMD^2_unbiased
+0.5 * median    13.53621985     0.00061640
+1.0 * median    27.07243970     0.00039492
+2.0 * median    54.14487939     0.00013056
+4.0 * median    108.28975878    0.00003510
+
+
+5. SLICED WASSERSTEIN DISTANCE
+==============================
+
+Estimator: empirical sliced Wasserstein distance with p=2
+Procedure: random 1D projections, sorting, average 1D W2 distance
+
+Number of matched samples: 10000
+Number of projections:     128
+Sliced W2^2:               0.09096870
+Sliced W2:                 0.30161017
