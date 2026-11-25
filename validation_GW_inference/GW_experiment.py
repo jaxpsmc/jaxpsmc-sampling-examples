@@ -1,44 +1,5 @@
-import os
-os.environ["JAX_ENABLE_X64"] = "True"
-import jax
-jax.config.update("jax_enable_x64", True)
-import jax.numpy as jnp
-from jaxpsmc import *
-import jimgw
-import time
-
-from jimgw.core.jim import Jim
-from jimgw.core.prior import (
-    CombinePrior,
-    UniformPrior,
-    CosinePrior,
-    SinePrior,
-    PowerLawPrior,
-    UniformSpherePrior,
-)
-from jimgw.core.single_event.detector import get_H1, get_L1
-from jimgw.core.single_event.likelihood import BaseTransientLikelihoodFD
-from jimgw.core.single_event.data import Data
-from jimgw.core.single_event.waveform import RippleIMRPhenomPv2
-from jimgw.core.transforms import BoundToUnbound
-from jimgw.core.single_event.transforms import (
-    SkyFrameToDetectorFrameSkyPositionTransform,
-    SphereSpinToCartesianSpinTransform,
-    MassRatioToSymmetricMassRatioTransform,
-    DistanceToSNRWeightedDistanceTransform,
-    GeocentricArrivalTimeToDetectorArrivalTimeTransform,
-    GeocentricArrivalPhaseToDetectorArrivalPhaseTransform,
-)
-
-from jax.tree_util import tree_map
-from GW_diagnostics import GW_diagnostics
-import json
-import re
-import sys
 import argparse
-import logging
-import numpy as np
-
+import sys
 
 ### the argparse is used to store and process any user input we want to pass on
 parser = argparse.ArgumentParser(description="Run experiment with specified parameters.")
@@ -60,7 +21,18 @@ parser.add_argument("--no-dynamic", action="store_false", dest="dynamic")
 parser.add_argument("--metric", type=str, default="ess", choices=["ess", "uss"])
 parser.add_argument("--resample", type=str, default="mult", choices=["mult", "syst"])
 parser.add_argument("--transform", type=str, default="probit", choices=["probit", "logit"])
-# parser.add_argument("--use-identity-flow", action="store_true", default=True)
+flow_choice = parser.add_mutually_exclusive_group()
+flow_choice.add_argument("--flow", choices=("on", "off"), default="off",
+                         help="Enable stage-wise NFM fitting (default: off).")
+parser.add_argument("--nfm-channels", type=int)
+parser.add_argument("--nfm-blocks", type=int)
+parser.add_argument("--nfm-layers", type=int)
+parser.add_argument("--nfm-epochs", type=int)
+parser.add_argument("--nfm-batch-size", type=int)
+parser.add_argument("--nfm-learning-rate", type=float)
+parser.add_argument("--nfm-optimizer", choices=("adam", "sgd"))
+parser.add_argument("--nfm-train-frequency", type=int,
+                    help="If omitted, use NFMConfig.training_interval.")
 parser.add_argument("--n-effective", type=int, required=True)
 parser.add_argument("--n-active", type=int, required=True)
 parser.add_argument("--n-prior", type=int, required=True)
@@ -100,6 +72,117 @@ parser.add_argument("--dili-complement-var", type=float, default=1.0)
 parser.add_argument("--dili-autodiff-gnh", action="store_true", default=False,
     help="Use autodiff Hessian of negative log-likelihood to construct the DILI/GNH geometry.",)
 
+
+
+EXAMPLE_ARGS = [
+
+    "--outdir", "/home/obevza/jaxpsmc/GW_examples_23_05",       
+    "--nr-of-samples", "10000",        
+
+    "--n-effective", "8000",
+    "--n-active", "4000",
+    "--n-prior", "180000",
+
+    "--n-total", "10000",
+    "--pc-n-steps", "450",
+    "--pc-n-max-steps", "1000",
+    "--keep-max", "30000",
+    "--sampling-mode", "truncated_persistent",    # "persistent", "truncated_persistent",
+    "--random-state", "0",
+
+    "--metric", "ess",
+    "--resample", "mult",
+    "--transform", "probit",
+    "--flow", "off",
+
+    "--proposal-scale", "0.0",
+    "--trim-ess", "0.99",
+    "--bins", "1000",
+    "--bisect-steps", "1000",
+
+    # delayed acceptance    
+    "--delayed-acceptance",
+
+    # mutation kernel
+    "--kernel", "pcn",        #"li_pcn", "pcn", "dili_pcn",
+    #"--dili-autodiff-gnh",          # you have to use it with dili_pcn
+]
+
+
+def flow_kwargs(params, dimension, sampler_key):
+    """Build the optional NFM once, before the sampler's compiled run."""
+    if params.get("flow", "off") == "off":
+        return {}
+    import optax
+    from jaxpsmc.normalizing_flow.nfm import NFMConfig, NFMFlow
+
+    config = NFMConfig(
+        n_dim=dimension, channels=params["nfm_channels"], n_blocks=params["nfm_blocks"],
+        n_layers=params["nfm_layers"], epochs=params["nfm_epochs"],
+        batch_size=params["nfm_batch_size"], learning_rate=params["nfm_learning_rate"],
+        train_frequency=params.get("nfm_train_frequency"),
+    )
+    # Stream 2 is reserved for initializing this flow. The sampler keeps its original key.
+    flow = NFMFlow.initialize(config, jax.random.fold_in(sampler_key, 2))
+    return {"flow": flow, "nfm_optimizer_factory": getattr(optax, params["nfm_optimizer"])}
+
+
+def parse_run_args(argv):
+    args = parser.parse_args(argv)
+    nfm = {k: v for k, v in vars(args).items() if k.startswith("nfm_")}
+    if args.flow == "off" and any(v is not None for v in nfm.values()):
+        parser.error("NFM arguments require --flow on")
+    if args.flow == "on":
+        if not args.precondition:
+            parser.error("--flow on requires preconditioned mutation")
+        missing = [k for k, v in nfm.items() if v is None and k != "nfm_train_frequency"]
+        if missing:
+            parser.error("--flow on requires " + ", ".join("--" + k.replace("_", "-") for k in missing))
+    return args
+
+
+if __name__ == "__main__":
+    script_args = parse_run_args(sys.argv[1:] or EXAMPLE_ARGS)
+
+
+import os
+os.environ["JAX_ENABLE_X64"] = "True"
+import jax
+jax.config.update("jax_enable_x64", True)
+import jax.numpy as jnp
+from jaxpsmc import *
+import jimgw
+import time
+
+from jimgw.core.jim import Jim
+from jimgw.core.prior import (
+    CombinePrior,
+    UniformPrior,
+    CosinePrior,
+    SinePrior,
+    PowerLawPrior,
+    UniformSpherePrior,
+)
+from jimgw.core.single_event.detector import get_H1, get_L1
+from jimgw.core.single_event.likelihood import BaseTransientLikelihoodFD
+from jimgw.core.single_event.data import Data
+from jimgw.core.single_event.waveform import RippleIMRPhenomPv2
+from jimgw.core.transforms import BoundToUnbound
+from jimgw.core.single_event.transforms import (
+    SkyFrameToDetectorFrameSkyPositionTransform,
+    SphereSpinToCartesianSpinTransform,
+    MassRatioToSymmetricMassRatioTransform,
+    DistanceToSNRWeightedDistanceTransform,
+    GeocentricArrivalTimeToDetectorArrivalTimeTransform,
+    GeocentricArrivalPhaseToDetectorArrivalPhaseTransform,
+)
+
+from jax.tree_util import tree_map
+from GW_diagnostics import GW_diagnostics
+import json
+import re
+import logging
+import numpy as np
 
 
 ##############################################################################################
@@ -546,15 +629,16 @@ def run_event_and_save_posteriors(
     t0 = time.time()
 
     # run sampler
+    key = jax.random.PRNGKey(seed)
     sampler = SamplerJAX(
         prior_u,
         loglike_x,
         cfg,
-        flow=IdentityFlowJAX(D),
+        **flow_kwargs(vars(args), D, key),
         loglike_approx_single_fn=loglike_approx_x,
     )
       
-    out = sampler.run(jax.random.PRNGKey(seed))
+    out = sampler.run(key)
     out = _block_tree(out)
     print(f"[{event_name}] sampler.run: {(time.time()-t0)/60:.2f} min")
 
@@ -606,6 +690,8 @@ def run_event_and_save_posteriors(
 
     meta = {
         "event": event_name,
+        "flow": args.flow,
+        **{k: v for k, v in vars(args).items() if k.startswith("nfm_") and v is not None},
         "parameter_names": list(prior.parameter_names),   # physical names
         "n_samples": int(theta_physical.shape[0]),
         "logz": float(logZ),
@@ -662,7 +748,7 @@ prior_smc = TransformedPrior(
 
 
 def main(argv=None):
-    args = parser.parse_args(argv)
+    args = argv if isinstance(argv, argparse.Namespace) else parse_run_args(argv)
 
     outdir, theta = run_event_and_save_posteriors(
         event_name="GW150914",
@@ -678,54 +764,5 @@ def main(argv=None):
     return outdir, theta
 
 
-#if __name__ == "__main__":
-#    main()
-
-
-
-sys.argv = [
-    "notebook",
-    "--outdir", "/home/obevza/jaxpsmc/GW_examples_23_05",       
-    "--nr-of-samples", "10000",        
-
-    "--n-effective", "8000",
-    "--n-active", "4000",
-    "--n-prior", "180000",
-
-    "--n-total", "10000",
-    "--pc-n-steps", "450",
-    "--pc-n-max-steps", "1000",
-    "--keep-max", "30000",
-    "--sampling-mode", "truncated_persistent",    # "persistent", "truncated_persistent",
-    "--random-state", "0",
-
-    "--metric", "ess",
-    "--resample", "mult",
-    "--transform", "probit",
-
-    "--proposal-scale", "0.0",
-    "--trim-ess", "0.99",
-    "--bins", "1000",
-    "--bisect-steps", "1000",
-
-    # delayed acceptance    
-    "--delayed-acceptance",
-
-    # mutation kernel
-    "--kernel", "pcn",        #"li_pcn", "pcn", "dili_pcn",
-    #"--dili-autodiff-gnh",          # you have to use it with dili_pcn
-]
-
-args = parser.parse_args()
-
-
-outdir, theta = run_event_and_save_posteriors(
-    event_name="GW150914",
-    prior_u=prior_smc,                     # use transformed prior
-    loglike_x=gw_loglike_unconstrained,    # use likelihood
-    D=D_transformed,                       # dimension in transformed space
-    names=final_names,                     # transformed parameter names
-    ranges=None,                           # will be computed inside or set to None
-    periodic_idx=None,
-    args=args,
-)
+if __name__ == "__main__":
+    main(script_args)

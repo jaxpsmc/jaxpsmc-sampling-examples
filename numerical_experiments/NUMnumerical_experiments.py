@@ -20,7 +20,6 @@ from jaxpsmc import (
     UNIFORM,
     SamplerConfigJAX,
     SamplerJAX,
-    IdentityFlowJAX,
     posterior_jax,
 )
 
@@ -60,7 +59,20 @@ parser.add_argument("--no-dynamic", action="store_false", dest="dynamic")
 parser.add_argument("--metric", type=str, default="ess", choices=["ess", "uss"])
 parser.add_argument("--resample", type=str, default="mult", choices=["mult", "syst"])
 parser.add_argument("--transform", type=str, default="probit", choices=["probit", "logit"])
-parser.add_argument("--use-identity-flow", action="store_true", default=True)
+flow_choice = parser.add_mutually_exclusive_group()
+flow_choice.add_argument("--flow", choices=("on", "off"), default="off",
+                         help="Enable stage-wise NFM fitting (default: off).")
+flow_choice.add_argument("--use-identity-flow", dest="flow", action="store_const", const="off",
+                         help=argparse.SUPPRESS)
+parser.add_argument("--nfm-channels", type=int)
+parser.add_argument("--nfm-blocks", type=int)
+parser.add_argument("--nfm-layers", type=int)
+parser.add_argument("--nfm-epochs", type=int)
+parser.add_argument("--nfm-batch-size", type=int)
+parser.add_argument("--nfm-learning-rate", type=float)
+parser.add_argument("--nfm-optimizer", choices=("adam", "sgd"))
+parser.add_argument("--nfm-train-frequency", type=int,
+                    help="If omitted, use NFMConfig.training_interval.")
 # delayed acceptance arguments
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
@@ -310,13 +322,13 @@ class SequentialMCExperimentRunner(Diagnostics):
             da_d_const=da_d_const,
         )       
 
-        # use dummy flow
-        flow_obj = IdentityFlowJAX(cfg.n_dim) if bool(self.params.get("use_identity_flow", True)) else self.flow
-        sampler = SamplerJAX(prior, loglike_single, cfg, flow=flow_obj, loglike_approx_single_fn=loglike_approx_single,)
-
-        # run sampler
+        # Preserve the original sampler seed in both modes.
         random_state = int(self.params.get("random_state", 0))
         key = jax.random.PRNGKey(random_state)
+        sampler = SamplerJAX(
+            prior, loglike_single, cfg, loglike_approx_single_fn=loglike_approx_single,
+            **flow_kwargs(self.params, cfg.n_dim, key),
+        )
         out = sampler.run(key, n_total)   
 
         # draw posterior samplers for diagnostics
@@ -340,7 +352,7 @@ class SequentialMCExperimentRunner(Diagnostics):
         logl    = np.asarray(post.logl_resampled[:n_keep])
         logp    = np.asarray(post.logp_resampled[:n_keep])
         logZ    = float(np.asarray(out.logz))
-        logZerr = float(np.asarray(out.logz_err))  # will be nan cause real flow is not trained
+        logZerr = float(np.asarray(out.logz_err))
 
         # save results
         self.samples = samples
@@ -364,26 +376,10 @@ class SequentialMCExperimentRunner(Diagnostics):
  
 
 
-#def main():
-#    args = parser.parse_args()
-#    runner = SequentialMCExperimentRunner(args)
-#    runner.run_experiment()
-#    runner.plot_true_vs_mcmc_corner()
-#    runner.save_samples_json()
-#    runner.compute_and_save_sample_statistics()
-#    runner.kl_metrics()
-#    runner.plot_top6_diagnostics_a4_2pages()
-
-
-#if __name__ == "__main__":
-#    main()
-
-
-
-sys.argv = [
+EXAMPLE_ARGS = [
 
     # where to save
-    "notebook",
+
     "--experiment-type", "gaussian",
     "--outdir", "/home/obevza/jaxpsmc/numerical_experiments/gaussian_10",
 
@@ -416,7 +412,7 @@ sys.argv = [
     "--metric", "ess",
     "--resample", "mult",
     "--transform", "probit",
-    "--use-identity-flow",
+    "--flow", "off",
 
     # proposal params (add these)
     "--proposal-scale", "0.0",
@@ -434,8 +430,41 @@ sys.argv = [
     "--dili-autodiff-gnh",  # for DILI
 ]
 
-def main():
-    args = parser.parse_args()
+
+def flow_kwargs(params, dimension, sampler_key):
+    """Build the optional NFM once, before the sampler's compiled run."""
+    if params.get("flow", "off") == "off":
+        return {}
+    import optax
+    from jaxpsmc.normalizing_flow.nfm import NFMConfig, NFMFlow
+
+    config = NFMConfig(
+        n_dim=dimension, channels=params["nfm_channels"], n_blocks=params["nfm_blocks"],
+        n_layers=params["nfm_layers"], epochs=params["nfm_epochs"],
+        batch_size=params["nfm_batch_size"], learning_rate=params["nfm_learning_rate"],
+        train_frequency=params.get("nfm_train_frequency"),
+    )
+    # Stream 2 is reserved for initializing this flow. The sampler keeps its original key.
+    flow = NFMFlow.initialize(config, jax.random.fold_in(sampler_key, 2))
+    return {"flow": flow, "nfm_optimizer_factory": getattr(optax, params["nfm_optimizer"])}
+
+
+def parse_run_args(argv):
+    args = parser.parse_args(argv)
+    nfm = {k: v for k, v in vars(args).items() if k.startswith("nfm_")}
+    if args.flow == "off" and any(v is not None for v in nfm.values()):
+        parser.error("NFM arguments require --flow on")
+    if args.flow == "on":
+        if not args.precondition:
+            parser.error("--flow on requires preconditioned mutation")
+        missing = [k for k, v in nfm.items() if v is None and k != "nfm_train_frequency"]
+        if missing:
+            parser.error("--flow on requires " + ", ".join("--" + k.replace("_", "-") for k in missing))
+    return args
+
+
+def main(argv=None):
+    args = parse_run_args(argv)
     runner = SequentialMCExperimentRunner(args)
     runner.run_experiment()
     runner.plot_corner()
@@ -444,4 +473,5 @@ def main():
     runner.metrics()
     runner.plot_diagnostics()
 
-main()
+if __name__ == "__main__":
+    main(sys.argv[1:] or EXAMPLE_ARGS)
