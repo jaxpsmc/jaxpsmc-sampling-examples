@@ -47,8 +47,10 @@ parser.add_argument("--n-effective", type=int, required=True)
 parser.add_argument("--n-active", type=int, required=True)
 parser.add_argument("--n-prior", type=int, required=True)
 parser.add_argument("--n-total", type=int, default=4096)
-parser.add_argument("--pc-n-steps", type=int, default=8)
-parser.add_argument("--pc-n-max-steps", type=int, default=80)
+parser.add_argument("--pc-n-steps", type=int, default=8,
+                    help="Flow-off mutation stopping parameter. Adaptive NFM derives it from dimension.")
+parser.add_argument("--pc-n-max-steps", type=int, default=80,
+                    help="Outer SMC stage limit; also the mutation cap when flow is off.")
 parser.add_argument("--keep-max", type=int, default=4096)
 parser.add_argument("--sampling-mode", type=str, default="truncated_persistent", choices=["persistent", "truncated_persistent"],)
 parser.add_argument("--random-state", type=int, default=0)
@@ -67,12 +69,7 @@ flow_choice.add_argument("--use-identity-flow", dest="flow", action="store_const
 parser.add_argument("--nfm-channels", type=int)
 parser.add_argument("--nfm-blocks", type=int)
 parser.add_argument("--nfm-layers", type=int)
-parser.add_argument("--nfm-epochs", type=int)
-parser.add_argument("--nfm-batch-size", type=int)
-parser.add_argument("--nfm-learning-rate", type=float)
-parser.add_argument("--nfm-optimizer", choices=("adam", "sgd"))
-parser.add_argument("--nfm-train-frequency", type=int,
-                    help="If omitted, use NFMConfig.training_interval.")
+
 # delayed acceptance arguments
 parser.add_argument("--delayed-acceptance", action="store_true", default=False,)
 parser.add_argument("--da-c-const", type=float, default=0.01,)
@@ -381,7 +378,7 @@ EXAMPLE_ARGS = [
     # where to save
 
     "--experiment-type", "gaussian",
-    "--outdir", "/home/obevza/jaxpsmc/numerical_experiments/gaussian_10",
+    "--outdir", "C:/Users/oleks/jaxpsmc-sampling-examples/numerical_experiments/gaussian_10",
 
     # parameters of the experiments
     "--n-dims", "5",
@@ -396,14 +393,14 @@ EXAMPLE_ARGS = [
     "--prior-high", "30.0",
 
     # define number of particles
-    "--n-effective", "2000",
-    "--n-active", "1000",
-    "--n-prior", "20000",
+    "--n-effective", "500",
+    "--n-active", "250",
+    "--n-prior", "100",
 
     # define steps
     "--n-total", "10000",
-    "--pc-n-steps", "200",
-    "--pc-n-max-steps", "800",
+    "--pc-n-steps", "20",
+    "--pc-n-max-steps", "60",
     "--keep-max", "20000",
     "--sampling-mode", "truncated_persistent",  #  "truncated_persistent",
     "--random-state", "0",
@@ -412,7 +409,10 @@ EXAMPLE_ARGS = [
     "--metric", "ess",
     "--resample", "mult",
     "--transform", "probit",
-    "--flow", "off",
+    "--flow", "on",
+    "--nfm-channels", "8",
+    "--nfm-blocks", "2",
+    "--nfm-layers", "1",
 
     # proposal params (add these)
     "--proposal-scale", "0.0",
@@ -435,18 +435,15 @@ def flow_kwargs(params, dimension, sampler_key):
     """Build the optional NFM once, before the sampler's compiled run."""
     if params.get("flow", "off") == "off":
         return {}
-    import optax
     from jaxpsmc.normalizing_flow.nfm import NFMConfig, NFMFlow
 
     config = NFMConfig(
         n_dim=dimension, channels=params["nfm_channels"], n_blocks=params["nfm_blocks"],
-        n_layers=params["nfm_layers"], epochs=params["nfm_epochs"],
-        batch_size=params["nfm_batch_size"], learning_rate=params["nfm_learning_rate"],
-        train_frequency=params.get("nfm_train_frequency"),
+        n_layers=params["nfm_layers"],
     )
     # Stream 2 is reserved for initializing this flow. The sampler keeps its original key.
     flow = NFMFlow.initialize(config, jax.random.fold_in(sampler_key, 2))
-    return {"flow": flow, "nfm_optimizer_factory": getattr(optax, params["nfm_optimizer"])}
+    return {"flow": flow, "adaptive_nfm": True}
 
 
 def parse_run_args(argv):
@@ -457,7 +454,7 @@ def parse_run_args(argv):
     if args.flow == "on":
         if not args.precondition:
             parser.error("--flow on requires preconditioned mutation")
-        missing = [k for k, v in nfm.items() if v is None and k != "nfm_train_frequency"]
+        missing = [k for k, v in nfm.items() if v is None]
         if missing:
             parser.error("--flow on requires " + ", ".join("--" + k.replace("_", "-") for k in missing))
     return args
